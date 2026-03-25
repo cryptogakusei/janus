@@ -29,13 +29,11 @@ public struct ChannelOpener: Sendable {
         case failed(String)
     }
 
-    /// Fund, approve, and open a channel on-chain.
+    /// Fund, approve, and open a channel on-chain using a WalletProvider.
     ///
-    /// - Parameters:
-    ///   - keyPair: The client's ETH keypair (payer + signer)
-    ///   - channel: The off-chain channel state (contains payee, token, salt, deposit)
-    /// - Returns: The result of the operation
-    public func openChannel(keyPair: EthKeyPair, channel: Channel) async -> OpenResult {
+    /// The wallet handles nonce management and signing internally,
+    /// so this method only needs to build calldata and wait for receipts.
+    public func openChannel(wallet: any WalletProvider, channel: Channel) async -> OpenResult {
         let escrow = config.escrowContract
         let token = config.paymentToken
 
@@ -48,38 +46,23 @@ public struct ChannelOpener: Sendable {
 
         // Step 1: Fund via testnet faucet
         do {
-            try await rpc.fundAddress(keyPair.address)
-            // Brief delay for faucet tx to confirm
+            try await rpc.fundAddress(wallet.address)
             try await Task.sleep(nanoseconds: 3_000_000_000)
         } catch {
-            // Non-fatal — may already be funded
             print("Faucet call failed (may already be funded): \(error.localizedDescription)")
         }
 
-        // Get gas price and nonce
-        let gasPrice: UInt64
-        let startNonce: UInt64
-        do {
-            gasPrice = try await rpc.gasPrice()
-            startNonce = try await rpc.getTransactionCount(address: keyPair.address)
-        } catch {
-            return .failed("Failed to get gas info: \(error.localizedDescription)")
-        }
-
         // Step 2: Approve escrow to spend pathUSD
-        let approveTx = EthTransaction.approve(
-            token: token,
+        let approveData = EthTransaction.approveCalldata(
             spender: escrow,
-            amount: UInt64(channel.deposit) * 10,  // approve more than needed for top-ups
-            nonce: startNonce,
-            gasPrice: gasPrice,
-            chainId: config.chainId
+            amount: UInt64(channel.deposit) * 10
         )
 
         let approveTxHash: String
         do {
-            let signed = try approveTx.sign(with: keyPair)
-            approveTxHash = try await rpc.sendRawTransaction(signedTx: signed)
+            approveTxHash = try await wallet.sendTransaction(
+                to: token, data: approveData, value: 0, chainId: config.chainId
+            )
             let receipt = try await rpc.waitForReceipt(txHash: approveTxHash)
             guard receipt.status else {
                 return .failed("Approve tx reverted: \(approveTxHash)")
@@ -89,22 +72,19 @@ public struct ChannelOpener: Sendable {
         }
 
         // Step 3: Open channel
-        let openTx = EthTransaction.openChannel(
-            escrow: escrow,
+        let openData = EthTransaction.openChannelCalldata(
             payee: channel.payee,
             token: token,
             deposit: channel.deposit,
             salt: channel.salt,
-            authorizedSigner: channel.authorizedSigner,
-            nonce: startNonce + 1,
-            gasPrice: gasPrice,
-            chainId: config.chainId
+            authorizedSigner: channel.authorizedSigner
         )
 
         let openTxHash: String
         do {
-            let signed = try openTx.sign(with: keyPair)
-            openTxHash = try await rpc.sendRawTransaction(signedTx: signed)
+            openTxHash = try await wallet.sendTransaction(
+                to: escrow, data: openData, value: 0, chainId: config.chainId
+            )
             let receipt = try await rpc.waitForReceipt(txHash: openTxHash)
             guard receipt.status else {
                 return .failed("Open tx reverted: \(openTxHash)")
@@ -118,5 +98,11 @@ public struct ChannelOpener: Sendable {
             approveTxHash: approveTxHash,
             openTxHash: openTxHash
         )
+    }
+
+    /// Legacy overload for direct EthKeyPair usage.
+    public func openChannel(keyPair: EthKeyPair, channel: Channel) async -> OpenResult {
+        let wallet = LocalWalletProvider(keyPair: keyPair, rpcURL: config.rpcURL)
+        return await openChannel(wallet: wallet, channel: channel)
     }
 }

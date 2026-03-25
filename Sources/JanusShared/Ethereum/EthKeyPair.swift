@@ -116,6 +116,12 @@ public struct EthSignature: Codable, Sendable, Equatable {
     public let s: Data  // 32 bytes
     public let v: UInt8 // recovery ID (0 or 1)
 
+    public init(r: Data, s: Data, v: UInt8) {
+        self.r = r
+        self.s = s
+        self.v = v
+    }
+
     /// The 65-byte compact representation: r || s || v
     public var compactRepresentation: Data {
         r + s + Data([v])

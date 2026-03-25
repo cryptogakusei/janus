@@ -1051,15 +1051,164 @@ Bluetooth can discover peers but cannot reliably establish `MCSession` or transf
 
 ---
 
-**Phase 6: Production Key Management** — TODO (requires wallet SDK integration)
+### Phase 6: Production Key Management — Privy Embedded Wallet Integration
 
-Current state: client generates raw secp256k1 key via `EthKeyPair()`, stored as plaintext hex in `client_session.json`. Private key is also logged via `os_log` (debug only). Not suitable for production.
+**Problem:** Client generates raw secp256k1 key via `EthKeyPair()`, stored as plaintext hex in `client_session.json`. Private key is also logged via `os_log` (debug only). Not suitable for production — key loss means loss of funds, no user identity tied to wallet.
 
-- [ ] Integrate embedded wallet SDK (Privy, Web3Auth, or Turnkey) into JanusClient
-- [ ] Replace `EthKeyPair()` with wallet-managed key (Secure Enclave / HSM-backed)
-- [ ] Sign vouchers and transactions through wallet SDK (app never sees raw key)
-- [ ] Add user authentication flow (email / Apple ID / SMS via wallet SDK)
-- [ ] Add biometric confirmation for high-value operations (channel open, large deposits)
-- [ ] Add key recovery (social recovery / cloud backup via wallet SDK)
+**Solution:** [Privy](https://privy.io) embedded wallet SDK. Uses MPC-TSS (threshold signature scheme) — the private key is split across Privy's infrastructure and the user's device. The app never sees the full key. Users authenticate via Apple Sign-In or email OTP, and Privy manages wallet creation/restoration automatically.
+
+#### Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  JanusClientApp                                         │
+│  ┌──────────┐    ┌──────────────┐    ┌───────────────┐  │
+│  │LoginView │───►│DiscoveryView │───►│  PromptView   │  │
+│  │(Privy    │    │(wallet badge,│    │(inference +   │  │
+│  │ auth)    │    │ MPC scan)    │    │ vouchers)     │  │
+│  └──────────┘    └──────────────┘    └───────────────┘  │
+│       │                │                     │          │
+│  ┌────▼────┐    ┌──────▼──────┐    ┌────────▼────────┐  │
+│  │PrivyAuth│    │ClientEngine │    │SessionManager   │  │
+│  │Manager  │───►│.walletProv. │───►│.walletProvider  │  │
+│  └─────────┘    └─────────────┘    └─────────────────┘  │
+│       │                                     │           │
+│  ┌────▼──────────┐              ┌───────────▼────────┐  │
+│  │PrivyWallet    │              │ChannelOpener       │  │
+│  │Provider       │              │(WalletProvider)    │  │
+│  │(EIP-712 sign, │              │approve → open      │  │
+│  │ send tx)      │              └────────────────────┘  │
+│  └───────────────┘                                      │
+│       │                                                 │
+│  ┌────▼──────────────────────────────────────────────┐  │
+│  │ WalletProvider protocol (JanusShared)             │  │
+│  │  - signVoucher(Voucher, TempoConfig) → SignedV.   │  │
+│  │  - sendTransaction(to, data, value, chainId) → tx │  │
+│  └───────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### What was built
+
+**1. `WalletProvider` protocol** (`Sources/JanusShared/Tempo/WalletProvider.swift`)
+- Abstraction over any Ethereum wallet (local key or remote MPC)
+- Two methods: `signVoucher()` (EIP-712) and `sendTransaction()` (raw tx)
+- Both are `async` — Privy's MPC signing requires a network call (~200-500ms)
+- `LocalWalletProvider`: wraps raw `EthKeyPair`, used by provider and tests
+- `PrivyWalletProvider`: wraps Privy embedded wallet, used by iOS client in production
+
+**2. `PrivyAuthManager`** (`JanusApp/JanusClient/PrivyAuthManager.swift`)
+- Manages Privy SDK initialization, authentication, and wallet lifecycle
+- Login methods: Apple Sign-In (via `privy.oAuth.login(with: .apple)`) and email OTP
+- Auto-checks for existing session on app launch (`privy.getAuthState()`)
+- After auth: creates embedded Ethereum wallet or restores existing one
+- Exposes `walletProvider: PrivyWalletProvider?` for downstream use
+
+**3. `PrivyWalletProvider`** (`JanusApp/JanusClient/PrivyWalletProvider.swift`)
+- Implements `WalletProvider` using Privy's `EmbeddedEthereumWalletProvider`
+- `signVoucher()`: builds EIP-712 typed data → `eth_signTypedData_v4` via Privy
+- `sendTransaction()`: builds `UnsignedEthTransaction` → `eth_sendTransaction` via Privy
+- Parses 65-byte hex signatures into `EthSignature(r, s, v)` with v normalization (27/28 → 0/1)
+
+**4. Refactored `ChannelOpener`** (`Sources/JanusShared/Tempo/ChannelOpener.swift`)
+- Now accepts `WalletProvider` instead of raw `EthKeyPair`
+- Uses calldata-only helpers (`EthTransaction.approveCalldata()`, `.openChannelCalldata()`)
+- Wallet handles nonce/gas internally — opener just builds calldata and waits for receipts
+- Legacy `openChannel(keyPair:)` overload preserved for backward compat
+
+**5. Refactored `SessionManager`** (`JanusApp/JanusClient/SessionManager.swift`)
+- Accepts optional `WalletProvider` injection (from Privy auth)
+- If injected: uses wallet's address as channel payer/signer (no local key created)
+- If not injected: falls back to creating local `EthKeyPair` wrapped in `LocalWalletProvider`
+- `createVoucherAuthorization()` is now `async` (Privy signing is a network call)
+
+**6. Updated `ClientEngine`** (`JanusApp/JanusClient/ClientEngine.swift`)
+- `walletProvider` property set by `DiscoveryView.onAppear` from `PrivyAuthManager`
+- Passes wallet provider through to `SessionManager.create()` / `.restore()`
+- `handleQuote()` splits into async (voucher via WalletProvider) and sync (Ed25519) paths
+
+**7. UI layer**
+- `LoginView` — Apple Sign-In button and email OTP flow, gates app access
+- `JanusClientApp` — conditionally shows `LoginView` or `DiscoveryView` based on `auth.isAuthenticated`
+- `DiscoveryView` — wallet badge in toolbar (truncated address + logout menu)
+
+**8. Calldata helpers** (`Sources/JanusShared/Ethereum/EthTransaction.swift`)
+- `approveCalldata(spender:amount:)` — just the ABI-encoded function call data
+- `openChannelCalldata(payee:token:deposit:salt:authorizedSigner:)` — same
+- `settleChannelCalldata(channelId:cumulativeAmount:voucherSignature:)` — same
+- Full transaction builders now delegate to these (DRY)
+
+**9. Tests** (13 new, `Tests/JanusSharedTests/WalletProviderTests.swift`)
+- `LocalWalletProvider` signature matches direct `EthKeyPair` signing (deterministic)
+- Vouchers signed via `WalletProvider` verify correctly with `VoucherVerifier`
+- `MockWalletProvider` simulates async Privy-like signing with call tracking
+- Full multi-step verification flow using `WalletProvider` through `Channel` + `VoucherVerifier`
+- Calldata helpers produce identical output to full transaction builders
+- **175/175 tests passing**
+
+#### Privy SDK v2.x API notes
+
+The Privy iOS SDK (v2.10.0) is a binary xcframework (`https://github.com/privy-io/privy-ios`). The actual API surface differs from some documentation:
+
+| What we expected | Actual v2.x API |
+|---|---|
+| `privy.apple.login()` | `privy.oAuth.login(with: .apple)` |
+| `privy.logout()` | `user.logout()` (on `PrivyUser`, not `Privy`) |
+| `privy.user` (sync property) | `privy.getAuthState() async` → `AuthState` enum |
+| `EIP712TypedData(types:, primaryType:, domain:, message:)` | `EIP712TypedData(domain:, primaryType:, types:, message:)` (different param order) |
+| `UnsignedEthTransaction(value: .hexadecimal(...))` | `.hexadecimalNumber(...)` or `.int(...)` via `Quantity` enum |
+| `ethSignTypedDataV4(...)` returns result directly | Factory method `throws`, must use `try` |
+
+Discovered by reading `.swiftinterface` at:
+`DerivedData/JanusApp-*/SourcePackages/checkouts/privy-ios/PrivySDK.xcframework/ios-arm64_x86_64-simulator/PrivySDK.framework/Modules/PrivySDK.swiftmodule/arm64-apple-ios-simulator.swiftinterface`
+
+#### Swift gotcha: public struct memberwise init
+
+`EthSignature` (a `public struct` in JanusShared) had no explicit `public init(r:s:v:)`. Swift auto-generates a memberwise initializer for structs, but it's **internal** — invisible to other modules. `PrivyWalletProvider` (in JanusClient module) couldn't call it. Fixed by adding an explicit `public init`.
+
+#### Payer/signer separation
+
+During real device testing, discovered that Privy's embedded wallet cannot send raw transactions to custom chains like Tempo Moderato (chain ID 42431). The `eth_sendTransaction` RPC goes through Privy's infrastructure, which only supports known chains.
+
+**Fix:** Separated the payer (on-chain transactions) from the authorizedSigner (voucher signing):
+- **Payer**: Local `EthKeyPair` — auto-funded via Tempo faucet, opens channel on-chain, deposits funds
+- **AuthorizedSigner**: Privy embedded wallet — signs EIP-712 vouchers via MPC
+
+The `Channel` struct already supported this via separate `payer` and `authorizedSigner` fields — this is exactly the pattern payment channels are designed for. Modified `SessionManager.setupTempoChannel()` to always create a local key for on-chain ops while using the injected Privy wallet for voucher signing.
+
+#### Apple Sign-In entitlement
+
+Apple Sign-In requires OAuth credentials (Services ID, Key ID, Signing Key, Team ID) configured in both Apple Developer Portal and Privy dashboard. Privy hard-gates enabling Apple login behind these credentials. Removed the `com.apple.developer.applesignin` entitlement from JanusClient for now — email OTP works without any external configuration.
+
+#### Real device test — PASSED (2026-03-25)
+
+**Setup:**
+- Privy email login enabled in dashboard (no Apple OAuth credentials needed)
+- JanusClient deployed to 2 iPhones via `xcrun devicectl`
+- JanusProvider running on Mac with funded ETH key (`0x52Db...252e`)
+
+**Results:**
+
+| Step | Action | Result |
+|---|---|---|
+| 1 | Launch app | LoginView appears with Janus branding |
+| 2 | Sign in with email OTP | Privy auth + embedded wallet created |
+| 3 | Wallet badge in toolbar | Privy wallet address displayed (0x...truncated) |
+| 4 | Scan → connect to Mac provider | MPC discovery + connection works |
+| 5 | Send inference requests | Vouchers signed via Privy MPC, responses received |
+| 6 | Channel opened on-chain | Local payer key funded via faucet, approve+open TXs confirmed |
+| 7 | Disconnect → provider settles | TX `0x426af2...` settled 18 credits on-chain |
+| 8 | Second iPhone (email OTP) | TX `0x0aaf1b...` settled 36 credits on-chain |
+
+**Two clients, two Privy wallets, two on-chain channels — 54 total credits settled.**
+
+Proved: Privy MPC wallet signing + local payer key for on-chain ops + multi-user support all working end-to-end.
+
+#### Phase 6 status: COMPLETE
+
+**Remaining cleanup (non-blocking):**
 - [ ] Remove debug logging of private keys (`CLIENT_ETH_PRIVKEY` os_log lines)
+- [ ] Configure Apple Sign-In OAuth credentials in Privy dashboard (requires Apple Developer Portal setup)
+- [ ] Add biometric confirmation for high-value operations (channel open, large deposits)
+- [ ] Add key recovery documentation (Privy handles this via their recovery flow)
 - [ ] Optional: fiat on-ramp integration for funding channels without pre-existing crypto

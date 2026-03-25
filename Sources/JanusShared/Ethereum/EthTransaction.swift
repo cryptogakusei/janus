@@ -80,7 +80,49 @@ public struct EthTransaction: Sendable {
     }
 }
 
-// MARK: - Common transaction builders
+// MARK: - Calldata builders (wallet-agnostic)
+
+public extension EthTransaction {
+
+    /// ABI calldata for ERC-20 `approve(spender, amount)`.
+    static func approveCalldata(spender: EthAddress, amount: UInt64) -> Data {
+        let selector = Keccak256.hash(Data("approve(address,uint256)".utf8)).prefix(4)
+        return selector + ABI.encode([.address(spender), .uint256(amount)])
+    }
+
+    /// ABI calldata for escrow `open(payee, token, deposit, salt, authorizedSigner)`.
+    static func openChannelCalldata(
+        payee: EthAddress, token: EthAddress, deposit: UInt64,
+        salt: Data, authorizedSigner: EthAddress
+    ) -> Data {
+        let selector = Keccak256.hash(
+            Data("open(address,address,uint128,bytes32,address)".utf8)
+        ).prefix(4)
+        return selector + ABI.encode([
+            .address(payee), .address(token), .uint256(deposit),
+            .bytes32(salt), .address(authorizedSigner),
+        ])
+    }
+
+    /// ABI calldata for escrow `settle(channelId, cumulativeAmount, signature)`.
+    static func settleChannelCalldata(
+        channelId: Data, cumulativeAmount: UInt64, voucherSignature: Data
+    ) -> Data {
+        let selector = Keccak256.hash(
+            Data("settle(bytes32,uint128,bytes)".utf8)
+        ).prefix(4)
+        let sigLength = ABI.Value.uint256(UInt64(voucherSignature.count)).encoded
+        let sigPadded = voucherSignature + Data(repeating: 0, count: (32 - voucherSignature.count % 32) % 32)
+        return selector
+            + ABI.Value.bytes32(channelId).encoded
+            + ABI.Value.uint256(cumulativeAmount).encoded
+            + ABI.Value.uint256(UInt64(96)).encoded
+            + sigLength
+            + sigPadded
+    }
+}
+
+// MARK: - Full transaction builders (for LocalWalletProvider / raw key signing)
 
 public extension EthTransaction {
 
@@ -93,14 +135,9 @@ public extension EthTransaction {
         gasPrice: UInt64,
         chainId: UInt64
     ) -> EthTransaction {
-        let selector = Keccak256.hash(Data("approve(address,uint256)".utf8)).prefix(4)
-        let calldata = selector + ABI.encode([
-            .address(spender),
-            .uint256(amount),
-        ])
-        return EthTransaction(
+        EthTransaction(
             nonce: nonce, gasPrice: gasPrice, gasLimit: 2_000_000,
-            to: token, data: calldata, chainId: chainId
+            to: token, data: approveCalldata(spender: spender, amount: amount), chainId: chainId
         )
     }
 
@@ -116,19 +153,14 @@ public extension EthTransaction {
         gasPrice: UInt64,
         chainId: UInt64
     ) -> EthTransaction {
-        let selector = Keccak256.hash(
-            Data("open(address,address,uint128,bytes32,address)".utf8)
-        ).prefix(4)
-        let calldata = selector + ABI.encode([
-            .address(payee),
-            .address(token),
-            .uint256(deposit),  // uint128 is ABI-encoded same as uint256
-            .bytes32(salt),
-            .address(authorizedSigner),
-        ])
-        return EthTransaction(
+        EthTransaction(
             nonce: nonce, gasPrice: gasPrice, gasLimit: 2_000_000,
-            to: escrow, data: calldata, chainId: chainId
+            to: escrow,
+            data: openChannelCalldata(
+                payee: payee, token: token, deposit: deposit,
+                salt: salt, authorizedSigner: authorizedSigner
+            ),
+            chainId: chainId
         )
     }
 
@@ -145,22 +177,14 @@ public extension EthTransaction {
         gasPrice: UInt64,
         chainId: UInt64
     ) -> EthTransaction {
-        let selector = Keccak256.hash(
-            Data("settle(bytes32,uint128,bytes)".utf8)
-        ).prefix(4)
-        // ABI encoding for dynamic `bytes` parameter:
-        // [channelId (32)] [cumulativeAmount (32)] [offset to bytes (32)] [bytes length (32)] [bytes data (padded)]
-        let sigLength = ABI.Value.uint256(UInt64(voucherSignature.count)).encoded
-        let sigPadded = voucherSignature + Data(repeating: 0, count: (32 - voucherSignature.count % 32) % 32)
-        let calldata = selector
-            + ABI.Value.bytes32(channelId).encoded
-            + ABI.Value.uint256(cumulativeAmount).encoded
-            + ABI.Value.uint256(UInt64(96)).encoded  // offset: 3 * 32 = 96
-            + sigLength
-            + sigPadded
-        return EthTransaction(
+        EthTransaction(
             nonce: nonce, gasPrice: gasPrice, gasLimit: 2_000_000,
-            to: escrow, data: calldata, chainId: chainId
+            to: escrow,
+            data: settleChannelCalldata(
+                channelId: channelId, cumulativeAmount: cumulativeAmount,
+                voucherSignature: voucherSignature
+            ),
+            chainId: chainId
         )
     }
 }

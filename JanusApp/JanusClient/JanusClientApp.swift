@@ -2,9 +2,15 @@ import SwiftUI
 
 @main
 struct JanusClientApp: App {
+    @StateObject private var auth = PrivyAuthManager()
+
     var body: some Scene {
         WindowGroup {
-            DiscoveryView()
+            if auth.isAuthenticated {
+                DiscoveryView(auth: auth)
+            } else {
+                LoginView(auth: auth)
+            }
         }
     }
 }

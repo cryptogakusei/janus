@@ -30,6 +30,7 @@ class SessionManager: ObservableObject {
 
     // Tempo voucher support
     private(set) var ethKeyPair: EthKeyPair?
+    private(set) var walletProvider: (any WalletProvider)?
     private(set) var channel: Channel?
     private(set) var channelInfo: ChannelInfo?
     private let tempoConfig = TempoConfig.testnet
@@ -43,17 +44,17 @@ class SessionManager: ObservableObject {
     private static let filename = "client_session.json"
 
     /// Try to restore a persisted session for this provider. Returns nil if none exists or expired.
-    static func restore(providerID: String, store: JanusStore = .appDefault) -> SessionManager? {
+    static func restore(providerID: String, walletProvider: (any WalletProvider)? = nil, store: JanusStore = .appDefault) -> SessionManager? {
         guard let persisted = store.load(PersistedClientSession.self, from: filename),
               persisted.isValid,
               persisted.sessionGrant.providerID == providerID else {
             return nil
         }
-        return try? SessionManager(persisted: persisted, store: store)
+        return try? SessionManager(persisted: persisted, walletProvider: walletProvider, store: store)
     }
 
     /// Restore from persisted state.
-    private init(persisted: PersistedClientSession, store: JanusStore) throws {
+    private init(persisted: PersistedClientSession, walletProvider: (any WalletProvider)?, store: JanusStore) throws {
         guard let keyData = Data(base64Encoded: persisted.privateKeyBase64) else {
             throw CryptoError.invalidBase64
         }
@@ -68,16 +69,20 @@ class SessionManager: ObservableObject {
         self.grantDelivered = persisted.grantDelivered
         self.store = store
 
-        // Restore ETH keypair if persisted (prevents channel ID mismatch on reconnect)
-        if let ethHex = persisted.ethPrivateKeyHex, let ethKP = try? EthKeyPair(hexPrivateKey: ethHex) {
+        // Use injected wallet provider (Privy) or restore local ETH keypair
+        if let wp = walletProvider {
+            self.walletProvider = wp
+            print("Using injected wallet provider: \(wp.address)")
+        } else if let ethHex = persisted.ethPrivateKeyHex, let ethKP = try? EthKeyPair(hexPrivateKey: ethHex) {
             self.ethKeyPair = ethKP
+            self.walletProvider = LocalWalletProvider(keyPair: ethKP, rpcURL: tempoConfig.rpcURL)
             print("Restored ETH keypair: \(ethKP.address)")
         }
     }
 
     /// Create a new session by requesting a grant from the backend API.
     /// Falls back to local self-signing if the backend is unreachable.
-    static func create(providerID: String, store: JanusStore = .appDefault) async -> SessionManager {
+    static func create(providerID: String, walletProvider: (any WalletProvider)? = nil, store: JanusStore = .appDefault) async -> SessionManager {
         let kp = JanusKeyPair()
 
         // Try to get a real grant from the backend
@@ -88,7 +93,7 @@ class SessionManager: ObservableObject {
                 clientPubkey: kp.publicKeyBase64,
                 maxCredits: nil
             )
-            let manager = SessionManager(keyPair: kp, grant: grant, store: store)
+            let manager = SessionManager(keyPair: kp, grant: grant, walletProvider: walletProvider, store: store)
             print("Session created via backend: \(grant.sessionID.prefix(8))...")
             return manager
         } catch {
@@ -119,26 +124,35 @@ class SessionManager: ObservableObject {
             backendSignature: sig
         )
 
-        let manager = SessionManager(keyPair: kp, grant: grant, store: store)
+        let manager = SessionManager(keyPair: kp, grant: grant, walletProvider: walletProvider, store: store)
         print("Session created locally (offline): \(sessionID.prefix(8))...")
         return manager
     }
 
     /// Internal init with a pre-created keypair and grant.
-    private init(keyPair: JanusKeyPair, grant: SessionGrant, store: JanusStore) {
+    private init(keyPair: JanusKeyPair, grant: SessionGrant, walletProvider: (any WalletProvider)?, store: JanusStore) {
         self.clientKeyPair = keyPair
         self.clientSigner = JanusSigner(keyPair: keyPair)
         self.sessionGrant = grant
         self.spendState = SpendState(sessionID: grant.sessionID)
         self.remainingCredits = grant.maxCredits
+        self.walletProvider = walletProvider
         self.store = store
         persist()
     }
 
     /// Set up a Tempo payment channel for this session.
     /// Called after receiving ServiceAnnounce with a provider Ethereum address.
-    /// Reuses a persisted ETH keypair if available (prevents channel ID mismatch on reconnect).
+    ///
+    /// When a Privy wallet is injected, it becomes the `authorizedSigner` (signs vouchers)
+    /// while a local `EthKeyPair` serves as the `payer` (funds and opens the channel on-chain).
+    /// Privy's embedded wallet can't send raw transactions to custom chains like Tempo,
+    /// but it can sign EIP-712 typed data for vouchers.
     func setupTempoChannel(providerEthAddress: String) {
+        let payerAddress: EthAddress
+        let signerAddress: EthAddress
+
+        // Always create/restore a local ETH keypair for on-chain transactions (payer)
         let ethKP: EthKeyPair
         if let existing = self.ethKeyPair {
             ethKP = existing
@@ -148,28 +162,41 @@ class SessionManager: ObservableObject {
             print("Failed to create Ethereum keypair")
             return
         }
+        self.ethKeyPair = ethKP
+        payerAddress = ethKP.address
+
+        let addr = ethKP.address.checksumAddress
+        os_log("CLIENT_ETH_ADDRESS=%{public}@ (payer)", log: smokeLog, type: .default, addr)
+        print("CLIENT ETH ADDRESS (payer): \(addr)")
+
+        if let wp = walletProvider {
+            // Privy wallet signs vouchers; local key pays on-chain
+            signerAddress = wp.address
+            let sigAddr = wp.address.checksumAddress
+            os_log("CLIENT_SIGNER_ADDRESS=%{public}@ (Privy wallet)", log: smokeLog, type: .default, sigAddr)
+            print("CLIENT SIGNER ADDRESS (Privy): \(sigAddr)")
+        } else {
+            // No Privy — local key does both
+            signerAddress = ethKP.address
+            self.walletProvider = LocalWalletProvider(keyPair: ethKP, rpcURL: tempoConfig.rpcURL)
+        }
+
         guard let providerAddr = try? EthAddress(hex: providerEthAddress) else {
             print("Invalid provider Ethereum address: \(providerEthAddress)")
             return
         }
 
-        self.ethKeyPair = ethKP
-        let addr = ethKP.address.checksumAddress
-        let privkey = ethKP.privateKeyData.ethHexPrefixed
         let salt = Keccak256.hash(Data(sessionGrant.sessionID.utf8))
         let saltHex = salt.ethHexPrefixed
-        os_log("CLIENT_ETH_ADDRESS=%{public}@", log: smokeLog, type: .default, addr)
-        os_log("CLIENT_ETH_PRIVKEY=%{public}@", log: smokeLog, type: .default, privkey)
         os_log("CLIENT_CHANNEL_SALT=%{public}@", log: smokeLog, type: .default, saltHex)
-        print("CLIENT ETH ADDRESS: \(addr)")
-        print("CLIENT ETH PRIVKEY: \(privkey)")
         print("CLIENT CHANNEL SALT: \(saltHex)")
+
         let ch = Channel(
-            payer: ethKP.address,
+            payer: payerAddress,
             payee: providerAddr,
             token: tempoConfig.paymentToken,
             salt: salt,
-            authorizedSigner: ethKP.address,
+            authorizedSigner: signerAddress,
             deposit: UInt64(sessionGrant.maxCredits),
             config: tempoConfig
         )
@@ -180,18 +207,20 @@ class SessionManager: ObservableObject {
         print("Tempo channel created: \(chIdHex.prefix(18))... deposit=\(ch.deposit)")
         persist()
 
-        // Open channel on-chain (async, non-blocking)
-        Task { await openChannelOnChain(keyPair: ethKP, channel: ch) }
+        // Open channel on-chain using local key (async, non-blocking)
+        // Always use LocalWalletProvider for on-chain ops — Privy can't send to custom chains
+        let onChainWallet = LocalWalletProvider(keyPair: ethKP, rpcURL: tempoConfig.rpcURL)
+        Task { await openChannelOnChain(wallet: onChainWallet, channel: ch) }
     }
 
-    /// Open the payment channel on-chain: fund → approve → open.
-    private func openChannelOnChain(keyPair: EthKeyPair, channel: Channel) async {
+    /// Open the payment channel on-chain using the wallet provider.
+    private func openChannelOnChain(wallet: any WalletProvider, channel: Channel) async {
         guard tempoConfig.rpcURL != nil else { return }
         channelOnChainStatus = "Opening channel on-chain..."
         os_log("CHANNEL_ONCHAIN_START", log: smokeLog, type: .default)
 
         let opener = ChannelOpener(config: tempoConfig)
-        let result = await opener.openChannel(keyPair: keyPair, channel: channel)
+        let result = await opener.openChannel(wallet: wallet, channel: channel)
 
         switch result {
         case .opened(let channelId, let approveTx, let openTx):
@@ -212,13 +241,14 @@ class SessionManager: ObservableObject {
     }
 
     /// Create a signed VoucherAuthorization for the given quote (Tempo path).
-    func createVoucherAuthorization(requestID: String, quoteID: String, priceCredits: Int) throws -> VoucherAuthorization {
-        guard let ethKP = ethKeyPair, let ch = channel else {
+    /// Async because WalletProvider signing may be a network call (e.g. Privy MPC).
+    func createVoucherAuthorization(requestID: String, quoteID: String, priceCredits: Int) async throws -> VoucherAuthorization {
+        guard let wp = walletProvider, let ch = channel else {
             throw CryptoError.verificationFailed
         }
         let newCumulative = UInt64(spendState.cumulativeSpend + priceCredits)
         let voucher = Voucher(channelId: ch.channelId, cumulativeAmount: newCumulative)
-        let signed = try voucher.sign(with: ethKP, config: tempoConfig)
+        let signed = try await wp.signVoucher(voucher, config: tempoConfig)
         return VoucherAuthorization(requestID: requestID, quoteID: quoteID, signedVoucher: signed)
     }
 

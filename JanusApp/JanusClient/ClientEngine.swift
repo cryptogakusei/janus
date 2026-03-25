@@ -46,6 +46,10 @@ class ClientEngine: ObservableObject {
     private var pendingPromptText: String?
     private var requestTimeoutTask: Task<Void, Never>?
 
+    /// Optional wallet provider injected from Privy auth.
+    /// When set, SessionManager uses it for voucher signing and on-chain ops.
+    var walletProvider: (any WalletProvider)?
+
     init() {
         self.browser = MPCBrowser()
 
@@ -93,7 +97,7 @@ class ClientEngine: ObservableObject {
     /// Create or restore a session for the connected provider.
     /// Tries to restore a persisted session first; creates a new one via backend API if none found.
     func createSession(providerID: String) {
-        if let restored = SessionManager.restore(providerID: providerID) {
+        if let restored = SessionManager.restore(providerID: providerID, walletProvider: walletProvider) {
             sessionManager = restored
             responseHistory = restored.history
             // Set up Tempo channel if provider supports it and not already set up
@@ -105,7 +109,7 @@ class ClientEngine: ObservableObject {
         } else {
             // Request grant from backend (async)
             Task {
-                let manager = await SessionManager.create(providerID: providerID)
+                let manager = await SessionManager.create(providerID: providerID, walletProvider: walletProvider)
                 // Set up Tempo channel if provider supports it
                 if let ethAddr = connectedProvider?.providerEthAddress, !ethAddr.isEmpty {
                     manager.setupTempoChannel(providerEthAddress: ethAddr)
@@ -200,38 +204,48 @@ class ClientEngine: ObservableObject {
         // Auto-accept: create and send authorization (Tempo voucher or Ed25519)
         guard let session = sessionManager else { return }
 
-        do {
-            let envelope: MessageEnvelope
-            if session.usesVouchers {
-                let auth = try session.createVoucherAuthorization(
-                    requestID: quote.requestID,
-                    quoteID: quote.quoteID,
-                    priceCredits: quote.priceCredits
-                )
-                envelope = try MessageEnvelope.wrap(
-                    type: .voucherAuthorization,
-                    senderID: session.sessionGrant.sessionID,
-                    payload: auth
-                )
-                session.channelInfoDelivered = true
-            } else {
+        if session.usesVouchers {
+            // Async path — voucher signing may require network call (Privy MPC)
+            Task {
+                do {
+                    let auth = try await session.createVoucherAuthorization(
+                        requestID: quote.requestID,
+                        quoteID: quote.quoteID,
+                        priceCredits: quote.priceCredits
+                    )
+                    let envelope = try MessageEnvelope.wrap(
+                        type: .voucherAuthorization,
+                        senderID: session.sessionGrant.sessionID,
+                        payload: auth
+                    )
+                    try browser.send(envelope)
+                    session.channelInfoDelivered = true
+                    requestState = .waitingForResponse
+                } catch {
+                    errorMessage = "Failed to authorize: \(error.localizedDescription)"
+                    requestState = .error
+                }
+            }
+        } else {
+            // Sync path — Ed25519 signing is local
+            do {
                 let auth = try session.createAuthorization(
                     requestID: quote.requestID,
                     quoteID: quote.quoteID,
                     priceCredits: quote.priceCredits
                 )
-                envelope = try MessageEnvelope.wrap(
+                let envelope = try MessageEnvelope.wrap(
                     type: .spendAuthorization,
                     senderID: session.sessionGrant.sessionID,
                     payload: auth
                 )
+                try browser.send(envelope)
                 session.grantDelivered = true
+                requestState = .waitingForResponse
+            } catch {
+                errorMessage = "Failed to authorize: \(error.localizedDescription)"
+                requestState = .error
             }
-            try browser.send(envelope)
-            requestState = .waitingForResponse
-        } catch {
-            errorMessage = "Failed to authorize: \(error.localizedDescription)"
-            requestState = .error
         }
     }
 
