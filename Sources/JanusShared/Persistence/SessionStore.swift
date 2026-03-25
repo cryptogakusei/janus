@@ -19,9 +19,8 @@ public struct PersistedClientSession: Codable, Sendable {
     public let sessionGrant: SessionGrant
     public var spendState: SpendState
     public var receipts: [Receipt]
-    public var grantDelivered: Bool
     public var history: [HistoryEntry]
-    /// Hex-encoded ETH private key for Tempo voucher signing (persisted to survive reconnect).
+    /// Hex-encoded ETH private key for Tempo channel payer (persisted to survive reconnect).
     public var ethPrivateKeyHex: String?
 
     public init(
@@ -29,7 +28,6 @@ public struct PersistedClientSession: Codable, Sendable {
         sessionGrant: SessionGrant,
         spendState: SpendState,
         receipts: [Receipt] = [],
-        grantDelivered: Bool = false,
         history: [HistoryEntry] = [],
         ethPrivateKeyHex: String? = nil
     ) {
@@ -37,7 +35,6 @@ public struct PersistedClientSession: Codable, Sendable {
         self.sessionGrant = sessionGrant
         self.spendState = spendState
         self.receipts = receipts
-        self.grantDelivered = grantDelivered
         self.history = history
         self.ethPrivateKeyHex = ethPrivateKeyHex
     }
@@ -49,7 +46,6 @@ public struct PersistedClientSession: Codable, Sendable {
         sessionGrant = try container.decode(SessionGrant.self, forKey: .sessionGrant)
         spendState = try container.decode(SpendState.self, forKey: .spendState)
         receipts = try container.decode([Receipt].self, forKey: .receipts)
-        grantDelivered = try container.decode(Bool.self, forKey: .grantDelivered)
         history = try container.decodeIfPresent([HistoryEntry].self, forKey: .history) ?? []
         ethPrivateKeyHex = try container.decodeIfPresent(String.self, forKey: .ethPrivateKeyHex)
     }
@@ -89,43 +85,32 @@ public struct PersistedLogEntry: Codable, Sendable {
     }
 }
 
-/// Persisted provider state — sessions, spend ledger, receipts issued.
+/// Persisted provider state — channels, receipts issued, request log.
 public struct PersistedProviderState: Codable, Sendable {
     public let providerID: String
     public let privateKeyBase64: String
-    public var knownSessions: [String: SessionGrant]
-    public var spendLedger: [String: SpendState]
     public var receiptsIssued: [Receipt]
     public var totalRequestsServed: Int
     public var totalCreditsEarned: Int
     public var requestLog: [PersistedLogEntry]
-    /// Maps sessionID → last settled cumulative spend.
-    /// Allows re-settlement when more spend accumulates after a prior settlement.
-    public var settledSpends: [String: Int]
     /// Hex-encoded ETH private key for Tempo settlement signing (persisted to survive restarts).
     public var ethPrivateKeyHex: String?
 
     public init(
         providerID: String,
         privateKeyBase64: String,
-        knownSessions: [String: SessionGrant] = [:],
-        spendLedger: [String: SpendState] = [:],
         receiptsIssued: [Receipt] = [],
         totalRequestsServed: Int = 0,
         totalCreditsEarned: Int = 0,
         requestLog: [PersistedLogEntry] = [],
-        settledSpends: [String: Int] = [:],
         ethPrivateKeyHex: String? = nil
     ) {
         self.providerID = providerID
         self.privateKeyBase64 = privateKeyBase64
-        self.knownSessions = knownSessions
-        self.spendLedger = spendLedger
         self.receiptsIssued = receiptsIssued
         self.totalRequestsServed = totalRequestsServed
         self.totalCreditsEarned = totalCreditsEarned
         self.requestLog = requestLog
-        self.settledSpends = settledSpends
         self.ethPrivateKeyHex = ethPrivateKeyHex
     }
 
@@ -134,13 +119,10 @@ public struct PersistedProviderState: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         providerID = try container.decode(String.self, forKey: .providerID)
         privateKeyBase64 = try container.decode(String.self, forKey: .privateKeyBase64)
-        knownSessions = try container.decode([String: SessionGrant].self, forKey: .knownSessions)
-        spendLedger = try container.decode([String: SpendState].self, forKey: .spendLedger)
-        receiptsIssued = try container.decode([Receipt].self, forKey: .receiptsIssued)
-        totalRequestsServed = try container.decode(Int.self, forKey: .totalRequestsServed)
-        totalCreditsEarned = try container.decode(Int.self, forKey: .totalCreditsEarned)
+        receiptsIssued = try container.decodeIfPresent([Receipt].self, forKey: .receiptsIssued) ?? []
+        totalRequestsServed = try container.decodeIfPresent(Int.self, forKey: .totalRequestsServed) ?? 0
+        totalCreditsEarned = try container.decodeIfPresent(Int.self, forKey: .totalCreditsEarned) ?? 0
         requestLog = try container.decodeIfPresent([PersistedLogEntry].self, forKey: .requestLog) ?? []
-        settledSpends = try container.decodeIfPresent([String: Int].self, forKey: .settledSpends) ?? [:]
         ethPrivateKeyHex = try container.decodeIfPresent(String.self, forKey: .ethPrivateKeyHex)
     }
 }

@@ -2,9 +2,8 @@ import Foundation
 
 /// Client → Provider: authorize payment via a signed Tempo voucher.
 ///
-/// Replaces `SpendAuthorization` (Ed25519) with EIP-712 voucher signing (secp256k1).
 /// The voucher's `cumulativeAmount` is monotonically increasing — each authorization
-/// supersedes the previous one, just like Tempo payment channels.
+/// supersedes the previous one, following the Tempo payment channel model.
 public struct VoucherAuthorization: Codable, Sendable {
     public let requestID: String
     public let quoteID: String

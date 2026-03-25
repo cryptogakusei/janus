@@ -100,12 +100,15 @@ class ClientEngine: ObservableObject {
         if let restored = SessionManager.restore(providerID: providerID, walletProvider: walletProvider) {
             sessionManager = restored
             responseHistory = restored.history
-            // Set up Tempo channel if provider supports it and not already set up
-            if !restored.usesVouchers, let ethAddr = connectedProvider?.providerEthAddress, !ethAddr.isEmpty {
+            // Set up Tempo channel if not already set up
+            if restored.channel == nil, let ethAddr = connectedProvider?.providerEthAddress, !ethAddr.isEmpty {
                 restored.setupTempoChannel(providerEthAddress: ethAddr)
+            } else {
+                // Retry opening on-chain if previous attempt was interrupted
+                restored.retryChannelOpenIfNeeded()
             }
             sessionReady = true
-            print("Restored session: \(restored.sessionGrant.sessionID.prefix(8))... (\(restored.remainingCredits) credits left, \(restored.history.count) history, vouchers=\(restored.usesVouchers))")
+            print("Restored session: \(restored.sessionGrant.sessionID.prefix(8))... (\(restored.remainingCredits) credits left, \(restored.history.count) history)")
         } else {
             // Request grant from backend (async)
             Task {
@@ -135,18 +138,8 @@ class ClientEngine: ObservableObject {
         pendingPromptText = promptText
         disconnectedDuringRequest = false
 
-        // Include session identity on first request:
-        // - Tempo path: channelInfo (replaces sessionGrant)
-        // - Ed25519 path: sessionGrant
-        let grant: SessionGrant?
-        let channelInfo: ChannelInfo?
-        if session.usesVouchers {
-            grant = nil
-            channelInfo = session.channelInfoDelivered ? nil : session.channelInfo
-        } else {
-            grant = session.grantDelivered ? nil : session.sessionGrant
-            channelInfo = nil
-        }
+        // Include channel info on first request so the provider can verify the payment channel
+        let channelInfo = session.channelInfoDelivered ? nil : session.channelInfo
 
         let request = PromptRequest(
             requestID: requestID,
@@ -154,7 +147,7 @@ class ClientEngine: ObservableObject {
             taskType: taskType,
             promptText: promptText,
             parameters: parameters,
-            sessionGrant: grant,
+            sessionGrant: nil,
             channelInfo: channelInfo
         )
 
@@ -201,46 +194,23 @@ class ClientEngine: ObservableObject {
         guard quote.requestID == pendingRequestID else { return }
         currentQuote = quote
 
-        // Auto-accept: create and send authorization (Tempo voucher or Ed25519)
+        // Auto-accept: sign a Tempo voucher and send authorization
         guard let session = sessionManager else { return }
 
-        if session.usesVouchers {
-            // Async path — voucher signing may require network call (Privy MPC)
-            Task {
-                do {
-                    let auth = try await session.createVoucherAuthorization(
-                        requestID: quote.requestID,
-                        quoteID: quote.quoteID,
-                        priceCredits: quote.priceCredits
-                    )
-                    let envelope = try MessageEnvelope.wrap(
-                        type: .voucherAuthorization,
-                        senderID: session.sessionGrant.sessionID,
-                        payload: auth
-                    )
-                    try browser.send(envelope)
-                    session.channelInfoDelivered = true
-                    requestState = .waitingForResponse
-                } catch {
-                    errorMessage = "Failed to authorize: \(error.localizedDescription)"
-                    requestState = .error
-                }
-            }
-        } else {
-            // Sync path — Ed25519 signing is local
+        Task {
             do {
-                let auth = try session.createAuthorization(
+                let auth = try await session.createVoucherAuthorization(
                     requestID: quote.requestID,
                     quoteID: quote.quoteID,
                     priceCredits: quote.priceCredits
                 )
                 let envelope = try MessageEnvelope.wrap(
-                    type: .spendAuthorization,
+                    type: .voucherAuthorization,
                     senderID: session.sessionGrant.sessionID,
                     payload: auth
                 )
                 try browser.send(envelope)
-                session.grantDelivered = true
+                session.channelInfoDelivered = true
                 requestState = .waitingForResponse
             } catch {
                 errorMessage = "Failed to authorize: \(error.localizedDescription)"

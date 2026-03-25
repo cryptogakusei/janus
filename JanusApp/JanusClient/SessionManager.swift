@@ -5,13 +5,11 @@ import os.log
 
 private let smokeLog = OSLog(subsystem: "com.janus.client", category: "SmokeTest")
 
-/// Manages the client's session state: keypair, session grant, and spend tracking.
+/// Manages the client's session state: keypair, session grant, spend tracking, and Tempo channel.
 ///
-/// On init, generates a client keypair and creates a demo session grant
-/// signed by the hardcoded backend key. In production, the grant would
-/// come from the backend API after payment.
-///
-/// Persists state to disk so sessions survive app restarts.
+/// Creates a local session grant for identity tracking, then sets up a Tempo
+/// payment channel with the provider. Vouchers are signed via WalletProvider
+/// (Privy MPC or local key). Persists state to disk so sessions survive app restarts.
 @MainActor
 class SessionManager: ObservableObject {
 
@@ -25,10 +23,7 @@ class SessionManager: ObservableObject {
     private let clientSigner: JanusSigner
     private let store: JanusStore
 
-    /// Whether the grant has been sent to the provider already.
-    var grantDelivered = false
-
-    // Tempo voucher support
+    // Tempo payment channel
     private(set) var ethKeyPair: EthKeyPair?
     private(set) var walletProvider: (any WalletProvider)?
     private(set) var channel: Channel?
@@ -36,8 +31,8 @@ class SessionManager: ObservableObject {
     private let tempoConfig = TempoConfig.testnet
     /// Whether the channel info has been sent to the provider.
     var channelInfoDelivered = false
-    /// Whether this session uses Tempo vouchers (vs Ed25519 SpendAuthorization).
-    var usesVouchers: Bool { channel != nil }
+    /// Whether the channel has been successfully opened on-chain.
+    var channelOpenedOnChain = false
     /// On-chain channel status.
     @Published var channelOnChainStatus: String = ""
 
@@ -66,7 +61,6 @@ class SessionManager: ObservableObject {
         self.remainingCredits = persisted.remainingCredits
         self.receipts = persisted.receipts
         self.history = persisted.history
-        self.grantDelivered = persisted.grantDelivered
         self.store = store
 
         // Use injected wallet provider (Privy) or restore local ETH keypair
@@ -80,32 +74,15 @@ class SessionManager: ObservableObject {
         }
     }
 
-    /// Create a new session by requesting a grant from the backend API.
-    /// Falls back to local self-signing if the backend is unreachable.
+    /// Create a new session with a locally-generated identity.
+    /// Payment is handled via Tempo payment channels (not backend grants).
     static func create(providerID: String, walletProvider: (any WalletProvider)? = nil, store: JanusStore = .appDefault) async -> SessionManager {
         let kp = JanusKeyPair()
-
-        // Try to get a real grant from the backend
-        do {
-            let backend: SessionBackend = HTTPSessionBackend()
-            let grant = try await backend.fundSession(
-                providerID: providerID,
-                clientPubkey: kp.publicKeyBase64,
-                maxCredits: nil
-            )
-            let manager = SessionManager(keyPair: kp, grant: grant, walletProvider: walletProvider, store: store)
-            print("Session created via backend: \(grant.sessionID.prefix(8))...")
-            return manager
-        } catch {
-            print("Backend unreachable, falling back to local grant: \(error.localizedDescription)")
-        }
-
-        // Fallback: self-sign with DemoConfig (offline mode)
         let sessionID = UUID().uuidString
-        let maxCredits = DemoConfig.defaultMaxCredits
-        let expiresAt = Date().addingTimeInterval(DemoConfig.defaultSessionDuration)
+        let maxCredits = 100
+        let expiresAt = Date().addingTimeInterval(3600)
 
-        let unsignedGrant = SessionGrant(
+        let grant = SessionGrant(
             sessionID: sessionID,
             userPubkey: kp.publicKeyBase64,
             providerID: providerID,
@@ -113,19 +90,9 @@ class SessionManager: ObservableObject {
             expiresAt: expiresAt,
             backendSignature: ""
         )
-        let backendSigner = JanusSigner(privateKey: DemoConfig.backendPrivateKey)
-        let sig = (try? backendSigner.sign(fields: unsignedGrant.signableFields)) ?? ""
-        let grant = SessionGrant(
-            sessionID: sessionID,
-            userPubkey: kp.publicKeyBase64,
-            providerID: providerID,
-            maxCredits: maxCredits,
-            expiresAt: expiresAt,
-            backendSignature: sig
-        )
 
         let manager = SessionManager(keyPair: kp, grant: grant, walletProvider: walletProvider, store: store)
-        print("Session created locally (offline): \(sessionID.prefix(8))...")
+        print("Session created: \(sessionID.prefix(8))...")
         return manager
     }
 
@@ -224,12 +191,15 @@ class SessionManager: ObservableObject {
 
         switch result {
         case .opened(let channelId, let approveTx, let openTx):
+            channelOpenedOnChain = true
             channelOnChainStatus = "Channel open on-chain"
+            persist()
             os_log("CHANNEL_ONCHAIN_OPENED=%{public}@", log: smokeLog, type: .default, channelId.ethHexPrefixed)
             os_log("CHANNEL_APPROVE_TX=%{public}@", log: smokeLog, type: .default, approveTx)
             os_log("CHANNEL_OPEN_TX=%{public}@", log: smokeLog, type: .default, openTx)
             print("Channel opened on-chain: approve=\(approveTx.prefix(18))... open=\(openTx.prefix(18))...")
         case .alreadyOpen(let channelId):
+            channelOpenedOnChain = true
             channelOnChainStatus = "Channel already open"
             os_log("CHANNEL_ALREADY_OPEN=%{public}@", log: smokeLog, type: .default, channelId.ethHexPrefixed)
             print("Channel already exists on-chain")
@@ -238,6 +208,15 @@ class SessionManager: ObservableObject {
             os_log("CHANNEL_ONCHAIN_FAILED=%{public}@", log: smokeLog, type: .default, reason)
             print("On-chain channel opening failed: \(reason)")
         }
+    }
+
+    /// Retry opening the channel on-chain if a previous attempt failed or was interrupted.
+    func retryChannelOpenIfNeeded() {
+        guard let ethKP = ethKeyPair, channel != nil, !channelOpenedOnChain else { return }
+        let onChainWallet = LocalWalletProvider(keyPair: ethKP, rpcURL: tempoConfig.rpcURL)
+        guard let ch = channel else { return }
+        print("Retrying channel open on-chain...")
+        Task { await openChannelOnChain(wallet: onChainWallet, channel: ch) }
     }
 
     /// Create a signed VoucherAuthorization for the given quote (Tempo path).
@@ -250,30 +229,6 @@ class SessionManager: ObservableObject {
         let voucher = Voucher(channelId: ch.channelId, cumulativeAmount: newCumulative)
         let signed = try await wp.signVoucher(voucher, config: tempoConfig)
         return VoucherAuthorization(requestID: requestID, quoteID: quoteID, signedVoucher: signed)
-    }
-
-    /// Create a signed SpendAuthorization for the given quote (Ed25519 path).
-    func createAuthorization(requestID: String, quoteID: String, priceCredits: Int) throws -> SpendAuthorization {
-        let newCumulative = spendState.cumulativeSpend + priceCredits
-        let newSequence = spendState.sequenceNumber + 1
-
-        let auth = SpendAuthorization(
-            sessionID: sessionGrant.sessionID,
-            requestID: requestID,
-            quoteID: quoteID,
-            cumulativeSpend: newCumulative,
-            sequenceNumber: newSequence,
-            clientSignature: ""
-        )
-        let sig = try clientSigner.sign(fields: auth.signableFields)
-        return SpendAuthorization(
-            sessionID: auth.sessionID,
-            requestID: requestID,
-            quoteID: quoteID,
-            cumulativeSpend: newCumulative,
-            sequenceNumber: newSequence,
-            clientSignature: sig
-        )
     }
 
     /// Update local state after receiving an InferenceResponse.
@@ -316,13 +271,12 @@ class SessionManager: ObservableObject {
             sessionGrant: sessionGrant,
             spendState: spendState,
             receipts: receipts,
-            grantDelivered: grantDelivered,
             history: history,
             ethPrivateKeyHex: ethKeyPair?.privateKeyData.ethHexPrefixed
         )
         do {
             try store.save(state, as: Self.filename)
-            print("Client session persisted: \(remainingCredits) credits, \(history.count) history, grantDelivered=\(grantDelivered)")
+            print("Client session persisted: \(remainingCredits) credits, \(history.count) history")
         } catch {
             print("Failed to persist client session: \(error)")
         }

@@ -76,8 +76,7 @@ final class PersistenceTests: XCTestCase {
             privateKeyBase64: kp.privateKeyBase64,
             sessionGrant: grant,
             spendState: spendState,
-            receipts: [receipt],
-            grantDelivered: true
+            receipts: [receipt]
         )
 
         try store.save(persisted, as: "client.json")
@@ -88,7 +87,6 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(loaded?.spendState.cumulativeSpend, 8)
         XCTAssertEqual(loaded?.spendState.sequenceNumber, 1)
         XCTAssertEqual(loaded?.receipts.count, 1)
-        XCTAssertEqual(loaded?.grantDelivered, true)
         XCTAssertEqual(loaded?.remainingCredits, 42)
         XCTAssertTrue(loaded?.isValid ?? false)
 
@@ -118,23 +116,10 @@ final class PersistenceTests: XCTestCase {
 
     func testProviderStateRoundTrip() throws {
         let kp = JanusKeyPair()
-        let grant = SessionGrant(
-            sessionID: "sess-1",
-            userPubkey: "client-pub",
-            providerID: "prov-1",
-            maxCredits: 100,
-            expiresAt: Date().addingTimeInterval(3600),
-            backendSignature: "sig"
-        )
-        var spendState = SpendState(sessionID: "sess-1")
-        spendState.advance(creditsCharged: 5)
-        spendState.advance(creditsCharged: 3)
 
         let persisted = PersistedProviderState(
             providerID: "prov-1",
             privateKeyBase64: kp.privateKeyBase64,
-            knownSessions: ["sess-1": grant],
-            spendLedger: ["sess-1": spendState],
             receiptsIssued: [],
             totalRequestsServed: 2,
             totalCreditsEarned: 8
@@ -145,9 +130,6 @@ final class PersistenceTests: XCTestCase {
 
         XCTAssertNotNil(loaded)
         XCTAssertEqual(loaded?.providerID, "prov-1")
-        XCTAssertEqual(loaded?.knownSessions.count, 1)
-        XCTAssertEqual(loaded?.spendLedger["sess-1"]?.cumulativeSpend, 8)
-        XCTAssertEqual(loaded?.spendLedger["sess-1"]?.sequenceNumber, 2)
         XCTAssertEqual(loaded?.totalRequestsServed, 2)
         XCTAssertEqual(loaded?.totalCreditsEarned, 8)
 
@@ -178,8 +160,7 @@ final class PersistenceTests: XCTestCase {
                 "sequenceNumber": 3,
                 "updatedAt": "\(ISO8601DateFormatter().string(from: Date()))"
             },
-            "receipts": [],
-            "grantDelivered": true
+            "receipts": []
         }
         """
         // Write raw JSON (no history key)
@@ -191,7 +172,6 @@ final class PersistenceTests: XCTestCase {
         XCTAssertNotNil(loaded, "Should decode old format without history field")
         XCTAssertEqual(loaded?.sessionGrant.sessionID, "old-sess")
         XCTAssertEqual(loaded?.spendState.cumulativeSpend, 15)
-        XCTAssertEqual(loaded?.grantDelivered, true)
         XCTAssertEqual(loaded?.history.count, 0, "History should default to empty array")
         XCTAssertEqual(loaded?.remainingCredits, 85)
     }

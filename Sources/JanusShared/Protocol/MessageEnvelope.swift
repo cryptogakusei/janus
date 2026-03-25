@@ -51,7 +51,6 @@ public enum MessageType: String, Codable, Sendable {
     case serviceAnnounce
     case promptRequest
     case quoteResponse
-    case spendAuthorization
     case inferenceResponse
     case errorResponse
     case sessionSync

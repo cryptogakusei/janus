@@ -254,8 +254,7 @@ final class OnChainTests: XCTestCase {
                 "sequenceNumber": 0,
                 "updatedAt": "\(ISO8601DateFormatter().string(from: Date()))"
             },
-            "receipts": [],
-            "grantDelivered": false
+            "receipts": []
         }
         """
         let data = oldJson.data(using: .utf8)!

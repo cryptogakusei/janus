@@ -3,8 +3,8 @@ import Foundation
 /// Tracks the cumulative spend state for a session.
 ///
 /// Both client and provider maintain a SpendState:
-/// - Client uses it to construct the next SpendAuthorization
-/// - Provider uses it in the 9-step verification to check monotonicity
+/// - Client uses it to construct the next VoucherAuthorization
+/// - Provider uses it to check voucher monotonicity
 public struct SpendState: Codable, Sendable {
     public let sessionID: String
     public private(set) var cumulativeSpend: Int

@@ -2,8 +2,6 @@ import Foundation
 
 /// Verifies Tempo voucher authorizations against a payment channel.
 ///
-/// This is the Tempo equivalent of `SpendVerifier`. Instead of checking Ed25519
-/// signatures against a backend-signed `SessionGrant`, it:
 /// 1. Verifies the EIP-712 voucher signature via `ecrecover`
 /// 2. Checks monotonicity against the channel's last accepted voucher
 /// 3. Checks the voucher amount doesn't exceed the channel deposit

@@ -123,34 +123,6 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(decoded.expiresAt, expiry)
     }
 
-    // MARK: - SpendAuthorization
-
-    func testSpendAuthorizationRoundTrip() throws {
-        let original = SpendAuthorization(
-            sessionID: "s1", requestID: "r1", quoteID: "q1",
-            cumulativeSpend: 15, sequenceNumber: 3,
-            clientSignature: "base64sig"
-        )
-
-        let data = try JSONEncoder.janus.encode(original)
-        let decoded = try JSONDecoder.janus.decode(SpendAuthorization.self, from: data)
-
-        XCTAssertEqual(decoded.sessionID, "s1")
-        XCTAssertEqual(decoded.cumulativeSpend, 15)
-        XCTAssertEqual(decoded.sequenceNumber, 3)
-        XCTAssertEqual(decoded.clientSignature, "base64sig")
-    }
-
-    func testSpendAuthorizationSignableFields() {
-        let auth = SpendAuthorization(
-            sessionID: "s1", requestID: "r1", quoteID: "q1",
-            cumulativeSpend: 15, sequenceNumber: 3,
-            clientSignature: "irrelevant"
-        )
-
-        XCTAssertEqual(auth.signableFields, ["s1", "r1", "q1", "15", "3"])
-    }
-
     // MARK: - InferenceResponse
 
     func testInferenceResponseRoundTrip() throws {

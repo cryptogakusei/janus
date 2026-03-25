@@ -8,8 +8,8 @@ private let smokeLog = OSLog(subsystem: "com.janus.provider", category: "SmokeTe
 
 /// Orchestrates the provider's full request pipeline.
 ///
-/// Handles: PromptRequest → QuoteResponse → SpendAuthorization → inference → InferenceResponse.
-/// Owns the MLX model, spend verifier, session cache, and provider keypair.
+/// Handles: PromptRequest → QuoteResponse → VoucherAuthorization → inference → InferenceResponse.
+/// Owns the MLX model, voucher verifier, channel state, and provider keypair.
 @MainActor
 class ProviderEngine: ObservableObject {
 
@@ -65,13 +65,12 @@ class ProviderEngine: ObservableObject {
         var logs: [LogEntry]
     }
 
-    /// Computes per-client summaries by grouping sessions by senderID.
+    /// Computes per-client summaries by grouping channels by senderID.
     var clientSummaries: [ClientSummary] {
         var summaries: [String: ClientSummary] = [:]
 
         for (sessionID, senderID) in sessionToSender {
-            let grant = knownSessions[sessionID]
-            let spend = spendLedger[sessionID]
+            let channel = channels[sessionID]
 
             var summary = summaries[senderID] ?? ClientSummary(
                 id: senderID,
@@ -84,11 +83,11 @@ class ProviderEngine: ObservableObject {
                 logs: []
             )
             summary.sessionIDs.append(sessionID)
-            summary.totalCreditsUsed += spend?.cumulativeSpend ?? 0
-            summary.maxCredits += grant?.maxCredits ?? 0
+            summary.totalCreditsUsed += Int(channel?.authorizedAmount ?? 0)
+            summary.maxCredits += Int(channel?.deposit ?? 0)
 
             let sessionLogs = requestLog.filter { $0.sessionID == sessionID }
-            summary.requestCount += sessionLogs.filter { !$0.isError && $0.taskType != "settlement" }.count
+            summary.requestCount += sessionLogs.filter { !$0.isError && $0.taskType != "on-chain-settlement" }.count
             summary.errorCount += sessionLogs.filter { $0.isError }.count
             summary.logs.append(contentsOf: sessionLogs)
             if let latest = sessionLogs.first?.timestamp {
@@ -108,13 +107,8 @@ class ProviderEngine: ObservableObject {
     let providerID: String
     let providerKeyPair: JanusKeyPair
     private let mlxRunner: MLXRunner
-    private let spendVerifier: SpendVerifier
     private let store: JanusStore
 
-    // Session cache: sessionID → SessionGrant
-    private var knownSessions: [String: SessionGrant] = [:]
-    // Spend ledger: sessionID → SpendState
-    private var spendLedger: [String: SpendState] = [:]
     // Pending quotes: quoteID → QuoteResponse (transient — not persisted)
     private var pendingQuotes: [String: QuoteResponse] = [:]
     // Last response per session — for SessionSync recovery if client missed it
@@ -147,27 +141,18 @@ class ProviderEngine: ObservableObject {
            let kp = try? JanusKeyPair(privateKeyRaw: keyData) {
             self.providerID = persisted.providerID
             self.providerKeyPair = kp
-            self.knownSessions = persisted.knownSessions
-            self.spendLedger = persisted.spendLedger
             self.totalRequestsServed = persisted.totalRequestsServed
             self.totalCreditsEarned = persisted.totalCreditsEarned
-            self.activeSessionCount = persisted.knownSessions.count
             self.requestLog = persisted.requestLog.map { entry in
                 LogEntry(timestamp: entry.timestamp, taskType: entry.taskType,
                          promptPreview: entry.promptPreview, responsePreview: entry.responsePreview,
                          credits: entry.credits, isError: entry.isError, sessionID: entry.sessionID)
             }
-            self.settledSpends = persisted.settledSpends
-            print("Restored provider state: \(persisted.knownSessions.count) sessions, \(persisted.totalRequestsServed) served, \(persisted.settledSpends.count) settled")
+            print("Restored provider state: \(persisted.totalRequestsServed) served")
         } else {
             self.providerID = providerID
             self.providerKeyPair = JanusKeyPair()
         }
-
-        self.spendVerifier = try! SpendVerifier(
-            providerID: providerID,
-            backendPublicKeyBase64: DemoConfig.backendPublicKeyBase64
-        )
 
         // Initialize Tempo/Ethereum identity — restore persisted key or generate new one
         let ethKP: EthKeyPair?
@@ -204,86 +189,37 @@ class ProviderEngine: ObservableObject {
         providerKeyPair.publicKeyBase64
     }
 
-    @Published var backendRegistered = false
-
-    /// Register this provider's identity with the backend.
-    func registerWithBackend() async {
-        let backend: SessionBackend = HTTPSessionBackend()
+    /// Fund the provider's ETH address via testnet faucet (for gas fees).
+    /// Tempo uses pathUSD for gas, so a fresh key needs faucet funding before it can settle.
+    func fundProviderIfNeeded() async {
+        guard let ethKP = providerEthKeyPair, let rpcURL = tempoConfig.rpcURL else { return }
+        let rpc = EthRPC(rpcURL: rpcURL)
         do {
-            let response = try await backend.registerProvider(
-                providerID: providerID,
-                publicKeyBase64: providerKeyPair.publicKeyBase64
-            )
-            backendRegistered = response.registered
-            print("Registered with backend: \(providerID)")
+            try await rpc.fundAddress(ethKP.address)
+            print("Provider funded via testnet faucet: \(ethKP.address.checksumAddress)")
+            os_log("PROVIDER_FUNDED=%{public}@", log: smokeLog, type: .default, ethKP.address.checksumAddress)
         } catch {
-            print("Backend registration failed (will retry on next launch): \(error.localizedDescription)")
+            print("Faucet funding failed (may already be funded): \(error.localizedDescription)")
         }
     }
 
-    /// Settle a session with the backend, submitting all receipts.
-    /// Returns true if the backend confirmed settlement.
-    @discardableResult
-    func settleSession(_ sessionID: String) async -> Bool {
-        guard let _ = knownSessions[sessionID],
-              let spend = spendLedger[sessionID] else { return false }
-
-        let sessionReceipts = receiptsIssued.filter { $0.sessionID == sessionID }
-        let backend: SessionBackend = HTTPSessionBackend()
-        do {
-            let response = try await backend.settleSession(
-                sessionID: sessionID,
-                providerID: providerID,
-                cumulativeSpend: spend.cumulativeSpend,
-                receipts: sessionReceipts
-            )
-            if response.settled {
-                print("Session \(sessionID.prefix(8))... settled with backend: \(response.settledSpend) credits")
-                appendLog(LogEntry(
-                    timestamp: Date(), taskType: "settlement",
-                    promptPreview: "Settled \(response.settledSpend) credits",
-                    responsePreview: nil, credits: response.settledSpend, isError: false,
-                    sessionID: sessionID
-                ))
-                return true
-            }
-            return false
-        } catch {
-            print("Settlement failed for \(sessionID.prefix(8))...: \(error.localizedDescription)")
-            appendLog(LogEntry(
-                timestamp: Date(), taskType: "settlement",
-                promptPreview: "Settlement failed: \(error.localizedDescription)",
-                responsePreview: nil, credits: nil, isError: true,
-                sessionID: sessionID
-            ))
-            return false
-        }
-    }
-
-    /// Settle all sessions that have unsettled spend.
-    /// Called when a client disconnects. Handles both paths:
-    /// - Ed25519 sessions → settle with Janus backend
-    /// - Tempo channels → settle on-chain via escrow contract
+    /// Settle all channels on-chain when a client disconnects.
     func settleAllSessions() async {
-        // Ed25519 path: settle with backend
-        for (sessionID, spend) in spendLedger where spend.cumulativeSpend > 0 {
-            let lastSettled = settledSpends[sessionID] ?? 0
-            if spend.cumulativeSpend <= lastSettled { continue }
-            let success = await settleSession(sessionID)
-            if success {
-                settledSpends[sessionID] = spend.cumulativeSpend
-                persistState()
-            }
-        }
-
-        // Tempo path: settle on-chain
         await settleAllChannelsOnChain()
     }
 
     /// Settle all Tempo channels on-chain that have unsettled vouchers.
+    /// Retries channels that don't exist on-chain yet (client may still be opening them).
     private func settleAllChannelsOnChain() async {
-        guard let ethKP = providerEthKeyPair, tempoConfig.rpcURL != nil else { return }
+        guard let ethKP = providerEthKeyPair, let rpcURL = tempoConfig.rpcURL else { return }
+
+        // Ensure provider has gas funds before attempting settlement
+        let rpc = EthRPC(rpcURL: rpcURL)
+        try? await rpc.fundAddress(ethKP.address)
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+
         let settler = ChannelSettler(config: tempoConfig)
+        var pendingChannels: [(String, Channel)] = []
 
         for (sessionID, channel) in channels {
             guard channel.latestVoucher != nil else { continue }
@@ -302,23 +238,59 @@ class ProviderEngine: ObservableObject {
                     credits: Int(amount), isError: false, sessionID: sessionID
                 ))
             case .noVoucher:
-                break // nothing to settle
+                break
             case .alreadySettled:
                 print("Channel \(sessionID.prefix(8))... already settled on-chain")
             case .failed(let reason):
-                print("On-chain settlement failed for \(sessionID.prefix(8))...: \(reason)")
-                os_log("SETTLEMENT_FAILED=%{public}@", log: smokeLog, type: .default, reason)
-                appendLog(LogEntry(
-                    timestamp: Date(), taskType: "on-chain-settlement",
-                    promptPreview: "On-chain settlement failed: \(reason)",
-                    responsePreview: nil, credits: nil, isError: true, sessionID: sessionID
-                ))
+                if reason.contains("does not exist on-chain") {
+                    // Channel may still be opening — queue for retry
+                    pendingChannels.append((sessionID, channel))
+                    print("Channel \(sessionID.prefix(8))... not yet on-chain, will retry...")
+                } else {
+                    print("On-chain settlement failed for \(sessionID.prefix(8))...: \(reason)")
+                    os_log("SETTLEMENT_FAILED=%{public}@", log: smokeLog, type: .default, reason)
+                    appendLog(LogEntry(
+                        timestamp: Date(), taskType: "on-chain-settlement",
+                        promptPreview: "On-chain settlement failed: \(reason)",
+                        responsePreview: nil, credits: nil, isError: true, sessionID: sessionID
+                    ))
+                }
+            }
+        }
+
+        // Retry pending channels after waiting for on-chain opening
+        // Client needs ~15s total: 3s faucet wait + approve tx + open tx
+        if !pendingChannels.isEmpty {
+            print("Waiting 20s for \(pendingChannels.count) channel(s) to appear on-chain...")
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            for (sessionID, channel) in pendingChannels {
+                let result = await settler.settle(providerKeyPair: ethKP, channel: channel)
+                switch result {
+                case .settled(let txHash, let amount):
+                    channels[sessionID]?.recordSettlement(amount: amount)
+                    print("On-chain settlement (retry): session \(sessionID.prefix(8))... amount=\(amount)")
+                    os_log("SETTLEMENT_TX=%{public}@", log: smokeLog, type: .default, txHash)
+                    os_log("SETTLEMENT_AMOUNT=%{public}d", log: smokeLog, type: .default, amount)
+                    appendLog(LogEntry(
+                        timestamp: Date(), taskType: "on-chain-settlement",
+                        promptPreview: "Settled \(amount) credits on-chain",
+                        responsePreview: txHash,
+                        credits: Int(amount), isError: false, sessionID: sessionID
+                    ))
+                case .noVoucher, .alreadySettled:
+                    break
+                case .failed(let reason):
+                    print("On-chain settlement failed (retry) for \(sessionID.prefix(8))...: \(reason)")
+                    os_log("SETTLEMENT_FAILED=%{public}@", log: smokeLog, type: .default, reason)
+                    appendLog(LogEntry(
+                        timestamp: Date(), taskType: "on-chain-settlement",
+                        promptPreview: "On-chain settlement failed: \(reason)",
+                        responsePreview: nil, credits: nil, isError: true, sessionID: sessionID
+                    ))
+                }
             }
         }
     }
-
-    // Maps sessionID → last settled cumulative spend
-    private var settledSpends: [String: Int] = [:]
 
     // MARK: - Model loading
 
@@ -346,9 +318,6 @@ class ProviderEngine: ObservableObject {
         case .promptRequest:
             guard let request = try? envelope.unwrap(as: PromptRequest.self) else { return }
             Task { await handlePromptRequest(request, senderID: envelope.senderID) }
-        case .spendAuthorization:
-            guard let auth = try? envelope.unwrap(as: SpendAuthorization.self) else { return }
-            Task { await handleSpendAuthorization(auth) }
         case .voucherAuthorization:
             guard let auth = try? envelope.unwrap(as: VoucherAuthorization.self) else { return }
             Task { await handleVoucherAuthorization(auth) }
@@ -365,25 +334,10 @@ class ProviderEngine: ObservableObject {
         // Track sender for routing replies back to the correct client
         sessionToSender[request.sessionID] = senderID
 
-        // Cache the request for later lookup during SpendAuthorization
+        // Cache the request for later lookup during VoucherAuthorization
         cacheRequest(request)
 
-        // If session grant included (Ed25519 path), verify and cache
-        if let grant = request.sessionGrant {
-            guard spendVerifier.verifyGrant(grant) else {
-                sendError(requestID: request.requestID, sessionID: request.sessionID,
-                          code: .invalidSession, message: "Invalid session grant signature")
-                return
-            }
-            knownSessions[grant.sessionID] = grant
-            if spendLedger[grant.sessionID] == nil {
-                spendLedger[grant.sessionID] = SpendState(sessionID: grant.sessionID)
-                activeSessionCount = knownSessions.count
-                persistState()
-            }
-        }
-
-        // If channel info included (Tempo voucher path), verify and cache
+        // If channel info included, verify and cache
         if let info = request.channelInfo, let vv = voucherVerifier {
             let result = await vv.verifyChannelInfoOnChain(info)
             guard result.isAccepted else {
@@ -402,7 +356,7 @@ class ProviderEngine: ObservableObject {
             )
             let isUpdate = channels[request.sessionID] != nil
             channels[request.sessionID] = channel
-            activeSessionCount = knownSessions.count + channels.count
+            activeSessionCount = channels.count
             let verifyStatus: String
             switch result {
             case .acceptedOnChain(let deposit): verifyStatus = "on-chain verified (deposit=\(deposit))"
@@ -415,10 +369,10 @@ class ProviderEngine: ObservableObject {
             os_log("CLIENT_CHANNEL_DEPOSIT=%{public}d", log: smokeLog, type: .default, info.deposit)
         }
 
-        // Check session exists (either Ed25519 grant or Tempo channel)
-        guard knownSessions[request.sessionID] != nil || channels[request.sessionID] != nil else {
+        // Check session has an active payment channel
+        guard channels[request.sessionID] != nil else {
             sendError(requestID: request.requestID, sessionID: request.sessionID,
-                      code: .invalidSession, message: "Unknown session. Include sessionGrant or channelInfo on first request.")
+                      code: .invalidSession, message: "Unknown session. Include channelInfo on first request.")
             return
         }
 
@@ -446,120 +400,7 @@ class ProviderEngine: ObservableObject {
         send(type: .quoteResponse, payload: quote, toSession: request.sessionID)
     }
 
-    private func handleSpendAuthorization(_ auth: SpendAuthorization) async {
-        // Look up grant and spend state
-        guard let grant = knownSessions[auth.sessionID] else {
-            sendError(requestID: auth.requestID, sessionID: auth.sessionID,
-                      code: .invalidSession, message: "Unknown session")
-            return
-        }
-        guard let spendState = spendLedger[auth.sessionID] else {
-            sendError(requestID: auth.requestID, sessionID: auth.sessionID,
-                      code: .invalidSession, message: "No spend state for session")
-            return
-        }
-        guard let quote = pendingQuotes[auth.quoteID] else {
-            sendError(requestID: auth.requestID, sessionID: auth.sessionID,
-                      code: .expiredQuote, message: "Quote not found or expired")
-            return
-        }
-
-        // Run 9-step verification
-        let accepted: SpendVerifier.Accepted
-        do {
-            accepted = try spendVerifier.verify(
-                authorization: auth, grant: grant,
-                spendState: spendState, quote: quote
-            )
-        } catch VerificationError.sequenceMismatch {
-            // Client is behind — they missed our last response.
-            // Send SessionSync with the missed response so they can recover.
-            if let missed = lastResponses[auth.sessionID] {
-                let sync = SessionSync(sessionID: auth.sessionID, missedResponse: missed)
-                send(type: .sessionSync, payload: sync, toSession: auth.sessionID)
-                print("Sent SessionSync for \(auth.sessionID.prefix(8))... (client behind)")
-            } else {
-                sendError(requestID: auth.requestID, sessionID: auth.sessionID,
-                          code: .sequenceMismatch, message: "Sequence mismatch and no recovery data available")
-            }
-            return
-        } catch let error as VerificationError {
-            sendError(requestID: auth.requestID, sessionID: auth.sessionID,
-                      code: error.errorCode, message: "\(error)")
-            return
-        } catch {
-            sendError(requestID: auth.requestID, sessionID: auth.sessionID,
-                      code: .invalidSignature, message: "Verification failed: \(error)")
-            return
-        }
-
-        // Remove used quote
-        pendingQuotes.removeValue(forKey: auth.quoteID)
-
-        // Run inference
-        let outputText: String
-        do {
-            let tier = PricingTier(rawValue: quote.priceTier) ?? .medium
-            let taskType = cachedTaskType(for: auth.requestID) ?? .summarize
-            outputText = try await mlxRunner.generate(
-                prompt: cachedPrompt(for: auth.requestID) ?? "",
-                taskType: taskType,
-                maxOutputTokens: tier.maxOutputTokens
-            )
-        } catch {
-            sendError(requestID: auth.requestID, sessionID: auth.sessionID,
-                      code: .inferenceFailed, message: "Inference failed: \(error)")
-            return
-        }
-
-        // Update spend state
-        spendLedger[auth.sessionID]?.advance(creditsCharged: accepted.creditsCharged)
-        persistState()
-
-        // Create signed receipt
-        let receipt = signReceipt(
-            sessionID: auth.sessionID,
-            requestID: auth.requestID,
-            creditsCharged: accepted.creditsCharged,
-            cumulativeSpend: accepted.newCumulativeSpend
-        )
-
-        // Store receipt for future settlement
-        receiptsIssued.append(receipt)
-
-        // Send response
-        let response = InferenceResponse(
-            requestID: auth.requestID,
-            outputText: outputText,
-            creditsCharged: accepted.creditsCharged,
-            cumulativeSpend: accepted.newCumulativeSpend,
-            receipt: receipt
-        )
-        // Store for SessionSync recovery, then send
-        lastResponses[auth.sessionID] = response
-        send(type: .inferenceResponse, payload: response, toSession: auth.sessionID)
-
-        lastResponse = outputText.prefix(100) + (outputText.count > 100 ? "..." : "")
-        totalRequestsServed += 1
-        totalCreditsEarned += accepted.creditsCharged
-
-        // Log entry
-        let taskType = cachedTaskType(for: auth.requestID) ?? .summarize
-        appendLog(LogEntry(
-            timestamp: Date(),
-            taskType: taskType.rawValue,
-            promptPreview: String((cachedPrompt(for: auth.requestID) ?? "").prefix(60)),
-            responsePreview: String(outputText.prefix(80)),
-            credits: accepted.creditsCharged,
-            isError: false,
-            sessionID: auth.sessionID
-        ))
-
-        // Clean up request cache
-        requestCache.removeValue(forKey: auth.requestID)
-    }
-
-    // MARK: - Tempo voucher authorization
+    // MARK: - Voucher authorization
 
     private func handleVoucherAuthorization(_ auth: VoucherAuthorization) async {
         // Find the channel by matching the voucher's channelId to a known session
@@ -633,7 +474,7 @@ class ProviderEngine: ObservableObject {
             return
         }
 
-        // Create signed receipt (still using Ed25519 provider signature for receipts)
+        // Create signed receipt (Ed25519 provider signature for non-repudiation)
         let receipt = signReceipt(
             sessionID: sessionID,
             requestID: auth.requestID,
@@ -674,7 +515,7 @@ class ProviderEngine: ObservableObject {
     // MARK: - Request context cache
 
     // Cache prompt requests so we can look up task type and prompt text
-    // when the SpendAuthorization arrives
+    // when the VoucherAuthorization arrives
     private var requestCache: [String: PromptRequest] = [:]
 
     func cacheRequest(_ request: PromptRequest) {
@@ -768,18 +609,15 @@ class ProviderEngine: ObservableObject {
         let state = PersistedProviderState(
             providerID: providerID,
             privateKeyBase64: providerKeyPair.privateKeyBase64,
-            knownSessions: knownSessions,
-            spendLedger: spendLedger,
             receiptsIssued: receiptsIssued,
             totalRequestsServed: totalRequestsServed,
             totalCreditsEarned: totalCreditsEarned,
             requestLog: logEntries,
-            settledSpends: settledSpends,
             ethPrivateKeyHex: providerEthKeyPair?.privateKeyData.ethHexPrefixed
         )
         do {
             try store.save(state, as: Self.filename)
-            print("Provider state persisted: \(knownSessions.count) sessions, \(totalRequestsServed) served")
+            print("Provider state persisted: \(channels.count) channels, \(totalRequestsServed) served")
         } catch {
             print("Failed to persist provider state: \(error)")
         }

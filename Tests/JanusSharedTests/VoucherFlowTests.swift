@@ -3,8 +3,7 @@ import XCTest
 
 /// End-to-end tests for the Tempo voucher payment flow.
 ///
-/// These tests simulate the full request lifecycle using Tempo vouchers
-/// instead of Ed25519 SpendAuthorizations:
+/// These tests simulate the full request lifecycle:
 ///   PromptRequest → QuoteResponse → VoucherAuthorization → InferenceResponse
 final class VoucherFlowTests: XCTestCase {
 

@@ -59,7 +59,7 @@ struct ProviderStatusView: View {
             )
             advertiser.startAdvertising()
             Task { await engine.loadModel() }
-            Task { await engine.registerWithBackend() }
+            Task { await engine.fundProviderIfNeeded() }
         }
     }
 
@@ -103,9 +103,9 @@ struct ProviderStatusView: View {
                 label: advertiser.isAdvertising ? "Advertising" : "Stopped"
             )
             statusPill(
-                icon: "server.rack",
-                color: engine.backendRegistered ? .green : .orange,
-                label: engine.backendRegistered ? "Registered" : "Unregistered"
+                icon: "link",
+                color: engine.activeSessionCount > 0 ? .green : .gray,
+                label: engine.activeSessionCount > 0 ? "Active" : "Idle"
             )
         }
     }
