@@ -1,0 +1,438 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		/* JanusClient files */
+		C100000001 /* JanusClientApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000001 /* JanusClientApp.swift */; };
+		C100000002 /* DiscoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000002 /* DiscoveryView.swift */; };
+		C100000003 /* MPCBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000003 /* MPCBrowser.swift */; };
+		C100000004 /* SessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000005 /* SessionManager.swift */; };
+		C100000005 /* ClientEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000006 /* ClientEngine.swift */; };
+		C100000006 /* PromptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000007 /* PromptView.swift */; };
+
+		/* JanusProvider files */
+		C200000001 /* JanusProviderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000001 /* JanusProviderApp.swift */; };
+		C200000002 /* ProviderStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000002 /* ProviderStatusView.swift */; };
+		C200000003 /* MPCAdvertiser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000003 /* MPCAdvertiser.swift */; };
+		C200000004 /* ProviderEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000005 /* ProviderEngine.swift */; };
+		C200000005 /* MLXRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000006 /* MLXRunner.swift */; };
+		C200000006 /* PromptTemplates.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000007 /* PromptTemplates.swift */; };
+
+		/* SPM product refs */
+		C300000001 /* JanusShared in Frameworks */ = {isa = PBXBuildFile; productRef = D100000001 /* JanusShared */; };
+		C300000002 /* JanusShared in Frameworks */ = {isa = PBXBuildFile; productRef = D100000002 /* JanusShared */; };
+		C300000003 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = D200000001 /* MLXLLM */; };
+		C300000004 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = D200000002 /* MLXLMCommon */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		/* JanusClient source files */
+		A100000001 /* JanusClientApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusClientApp.swift; sourceTree = "<group>"; };
+		A100000002 /* DiscoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryView.swift; sourceTree = "<group>"; };
+		A100000003 /* MPCBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPCBrowser.swift; sourceTree = "<group>"; };
+		A100000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A100000005 /* SessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManager.swift; sourceTree = "<group>"; };
+		A100000006 /* ClientEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClientEngine.swift; sourceTree = "<group>"; };
+		A100000007 /* PromptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptView.swift; sourceTree = "<group>"; };
+
+		/* JanusProvider source files */
+		A200000001 /* JanusProviderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusProviderApp.swift; sourceTree = "<group>"; };
+		A200000002 /* ProviderStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderStatusView.swift; sourceTree = "<group>"; };
+		A200000003 /* MPCAdvertiser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPCAdvertiser.swift; sourceTree = "<group>"; };
+		A200000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A200000005 /* ProviderEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderEngine.swift; sourceTree = "<group>"; };
+		A200000006 /* MLXRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXRunner.swift; sourceTree = "<group>"; };
+		A200000007 /* PromptTemplates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptTemplates.swift; sourceTree = "<group>"; };
+
+		/* Products */
+		B100000001 /* JanusClient.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JanusClient.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B200000001 /* JanusProvider.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JanusProvider.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		F100000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C300000001 /* JanusShared in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F200000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C300000002 /* JanusShared in Frameworks */,
+				C300000003 /* MLXLLM in Frameworks */,
+				C300000004 /* MLXLMCommon in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		E000000000 = {
+			isa = PBXGroup;
+			children = (
+				E100000000 /* JanusClient */,
+				E200000000 /* JanusProvider */,
+				E300000000 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		E100000000 /* JanusClient */ = {
+			isa = PBXGroup;
+			children = (
+				A100000001 /* JanusClientApp.swift */,
+				A100000002 /* DiscoveryView.swift */,
+				A100000003 /* MPCBrowser.swift */,
+				A100000005 /* SessionManager.swift */,
+				A100000006 /* ClientEngine.swift */,
+				A100000007 /* PromptView.swift */,
+				A100000004 /* Info.plist */,
+			);
+			path = JanusClient;
+			sourceTree = "<group>";
+		};
+		E200000000 /* JanusProvider */ = {
+			isa = PBXGroup;
+			children = (
+				A200000001 /* JanusProviderApp.swift */,
+				A200000002 /* ProviderStatusView.swift */,
+				A200000003 /* MPCAdvertiser.swift */,
+				A200000005 /* ProviderEngine.swift */,
+				A200000006 /* MLXRunner.swift */,
+				A200000007 /* PromptTemplates.swift */,
+				A200000004 /* Info.plist */,
+			);
+			path = JanusProvider;
+			sourceTree = "<group>";
+		};
+		E300000000 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B100000001 /* JanusClient.app */,
+				B200000001 /* JanusProvider.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		T100000001 /* JanusClient */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L100000001 /* Build configuration list for PBXNativeTarget "JanusClient" */;
+			buildPhases = (
+				S100000001 /* Sources */,
+				F100000001 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = JanusClient;
+			packageProductDependencies = (
+				D100000001 /* JanusShared */,
+			);
+			productName = JanusClient;
+			productReference = B100000001 /* JanusClient.app */;
+			productType = "com.apple.product-type.application";
+		};
+		T200000001 /* JanusProvider */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L200000001 /* Build configuration list for PBXNativeTarget "JanusProvider" */;
+			buildPhases = (
+				S200000001 /* Sources */,
+				F200000001 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = JanusProvider;
+			packageProductDependencies = (
+				D100000002 /* JanusShared */,
+				D200000001 /* MLXLLM */,
+				D200000002 /* MLXLMCommon */,
+			);
+			productName = JanusProvider;
+			productReference = B200000001 /* JanusProvider.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		P000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = L000000001 /* Build configuration list for PBXProject "JanusApp" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = E000000000;
+			packageReferences = (
+				R000000001 /* XCLocalSwiftPackageReference ".." */,
+			);
+			productRefGroup = E300000000 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				T100000001 /* JanusClient */,
+				T200000001 /* JanusProvider */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		S100000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C100000001 /* JanusClientApp.swift in Sources */,
+				C100000002 /* DiscoveryView.swift in Sources */,
+				C100000003 /* MPCBrowser.swift in Sources */,
+				C100000004 /* SessionManager.swift in Sources */,
+				C100000005 /* ClientEngine.swift in Sources */,
+				C100000006 /* PromptView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		S200000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C200000001 /* JanusProviderApp.swift in Sources */,
+				C200000002 /* ProviderStatusView.swift in Sources */,
+				C200000003 /* MPCAdvertiser.swift in Sources */,
+				C200000004 /* ProviderEngine.swift in Sources */,
+				C200000005 /* MLXRunner.swift in Sources */,
+				C200000006 /* PromptTemplates.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		X000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		X000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_OPTIMIZATION_LEVEL = s;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		X100000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2GKGGY6HZ8;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = JanusClient/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.janus.client;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		X100000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2GKGGY6HZ8;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = JanusClient/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.janus.client;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		X200000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = JanusProvider/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.janus.provider;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		X200000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = JanusProvider/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.janus.provider;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		L000000001 /* Build configuration list for PBXProject "JanusApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				X000000001 /* Debug */,
+				X000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		L100000001 /* Build configuration list for PBXNativeTarget "JanusClient" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				X100000001 /* Debug */,
+				X100000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		L200000001 /* Build configuration list for PBXNativeTarget "JanusProvider" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				X200000001 /* Debug */,
+				X200000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		R000000001 /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D100000001 /* JanusShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = R000000001 /* XCLocalSwiftPackageReference ".." */;
+			productName = JanusShared;
+		};
+		D100000002 /* JanusShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = R000000001 /* XCLocalSwiftPackageReference ".." */;
+			productName = JanusShared;
+		};
+		D200000001 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = R000000001 /* XCLocalSwiftPackageReference ".." */;
+			productName = MLXLLM;
+		};
+		D200000002 /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = R000000001 /* XCLocalSwiftPackageReference ".." */;
+			productName = MLXLMCommon;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = P000000001 /* Project object */;
+}

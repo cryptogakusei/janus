@@ -1,0 +1,13 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+
+remappings = [
+    "tempo-std/=lib/tempo-std/src/",
+    "solady/=lib/solady/src/",
+    "forge-std/=lib/forge-std/src/",
+]
+
+evm_version = "cancun"
+solc_version = "0.8.28"

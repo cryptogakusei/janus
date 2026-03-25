@@ -14,12 +14,17 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", from: "2.30.6"),
+        .package(url: "https://github.com/21-DOT-DEV/swift-secp256k1", exact: "0.21.1"),
+        .package(url: "https://github.com/krzyzanowskim/CryptoSwift", from: "1.8.0"),
     ],
     targets: [
         // Shared library — no platform dependencies, used by all targets
         .target(
             name: "JanusShared",
-            dependencies: [],
+            dependencies: [
+                .product(name: "P256K", package: "swift-secp256k1"),
+                .product(name: "CryptoSwift", package: "CryptoSwift"),
+            ],
             path: "Sources/JanusShared"
         ),
 

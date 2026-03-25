@@ -1,7 +1,25 @@
+# Swift / Xcode
 .build/
 .swiftpm/
 DerivedData/
-*.xcodeproj
 *.xcworkspace
+xcuserdata/
 .DS_Store
 default.profraw
+
+# Xcode build artifacts (local builds from xcodebuild -project)
+JanusApp/build/
+
+# Foundry / Solidity
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# Sensitive files (testnet keys, session state)
+provider_eth.json
+provider_state.json
+client_session.json
+
+# OS
+.DS_Store
+Thumbs.db
