@@ -55,6 +55,8 @@ public enum MessageType: String, Codable, Sendable {
     case errorResponse
     case sessionSync
     case voucherAuthorization
+    case relayEnvelope
+    case relayAnnounce
     case ping
     case pong
 }

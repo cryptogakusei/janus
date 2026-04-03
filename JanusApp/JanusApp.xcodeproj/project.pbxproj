@@ -27,6 +27,8 @@
 		C100000007 /* PrivyAuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000008 /* PrivyAuthManager.swift */; };
 		C100000008 /* PrivyWalletProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000009 /* PrivyWalletProvider.swift */; };
 		C100000009 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000010 /* LoginView.swift */; };
+		C100000010 /* MPCRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000011 /* MPCRelay.swift */; };
+		C100000011 /* RelayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000012 /* RelayView.swift */; };
 
 		/* SPM product refs */
 		C300000001 /* JanusShared in Frameworks */ = {isa = PBXBuildFile; productRef = D100000001 /* JanusShared */; };
@@ -48,6 +50,8 @@
 		A100000008 /* PrivyAuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivyAuthManager.swift; sourceTree = "<group>"; };
 		A100000009 /* PrivyWalletProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivyWalletProvider.swift; sourceTree = "<group>"; };
 		A100000010 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		A100000011 /* MPCRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPCRelay.swift; sourceTree = "<group>"; };
+		A100000012 /* RelayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayView.swift; sourceTree = "<group>"; };
 
 		/* JanusProvider source files */
 		A200000001 /* JanusProviderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusProviderApp.swift; sourceTree = "<group>"; };
@@ -107,6 +111,8 @@
 				A100000008 /* PrivyAuthManager.swift */,
 				A100000009 /* PrivyWalletProvider.swift */,
 				A100000010 /* LoginView.swift */,
+				A100000011 /* MPCRelay.swift */,
+				A100000012 /* RelayView.swift */,
 				A100000004 /* Info.plist */,
 			);
 			path = JanusClient;
@@ -226,6 +232,8 @@
 				C100000007 /* PrivyAuthManager.swift in Sources */,
 				C100000008 /* PrivyWalletProvider.swift in Sources */,
 				C100000009 /* LoginView.swift in Sources */,
+				C100000010 /* MPCRelay.swift in Sources */,
+				C100000011 /* RelayView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

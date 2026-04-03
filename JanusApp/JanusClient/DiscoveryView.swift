@@ -5,6 +5,7 @@ import JanusShared
 struct DiscoveryView: View {
     @ObservedObject var auth: PrivyAuthManager
     @StateObject private var engine = ClientEngine()
+    var switchToRelay: (() -> Void)?
 
     var body: some View {
         NavigationStack {
@@ -33,15 +34,21 @@ struct DiscoveryView: View {
             .navigationTitle("Janus")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    walletBadge
+                    HStack(spacing: 8) {
+                        walletBadge
+                        connectionModeBadge
+                    }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button(engine.isSearching ? "Stop" : "Scan") {
-                        if engine.isSearching {
-                            engine.stopSearching()
-                        } else {
-                            engine.startSearching()
+                    HStack(spacing: 12) {
+                        Button(engine.isSearching ? "Stop" : "Scan") {
+                            if engine.isSearching {
+                                engine.stopSearching()
+                            } else {
+                                engine.startSearching()
+                            }
                         }
+                        settingsMenu
                     }
                 }
             }
@@ -73,6 +80,49 @@ struct DiscoveryView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var connectionModeBadge: some View {
+        Group {
+            switch engine.browser.connectionMode {
+            case .direct:
+                Text("Direct")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.green)
+                    .cornerRadius(4)
+            case .relayed(let relayName):
+                Text("via \(relayName)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.blue)
+                    .cornerRadius(4)
+            case .disconnected:
+                EmptyView()
+            }
+        }
+    }
+
+    private var settingsMenu: some View {
+        Menu {
+            Toggle("Force Relay Mode", isOn: Binding(
+                get: { engine.browser.forceRelayMode },
+                set: { engine.browser.forceRelayMode = $0 }
+            ))
+            Divider()
+            Button {
+                engine.stopSearching()
+                switchToRelay?()
+            } label: {
+                Label("Switch to Relay Mode", systemImage: "antenna.radiowaves.left.and.right")
+            }
+        } label: {
+            Image(systemName: "gearshape")
         }
     }
 
