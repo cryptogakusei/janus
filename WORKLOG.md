@@ -1212,3 +1212,80 @@ Proved: Privy MPC wallet signing + local payer key for on-chain ops + multi-user
 - [ ] Add biometric confirmation for high-value operations (channel open, large deposits)
 - [ ] Add key recovery documentation (Privy handles this via their recovery flow)
 - [ ] Optional: fiat on-ramp integration for funding channels without pre-existing crypto
+
+---
+
+## 2026-03-26
+
+### Phase 7: Multi-hop relay (single-hop MVP)
+
+#### Ed25519 cleanup verification
+- Verified all 5 settlement transactions on Tempo Moderato testnet (93+48+99+57+60 = 357 credits)
+- Confirmed Ed25519 removal didn't break payment flow
+- Committed `a24c6a6`: "Remove Ed25519 payment fallback, keep only Tempo voucher path"
+
+#### Relay design
+- Wrote `RELAY_DESIGN.md` — full 5-phase relay architecture
+- Key design decision: **provider transparency** — zero provider code changes, relay unwraps RelayEnvelope and sends bare MessageEnvelope
+- 5 phases: Core forwarding → Robustness → Multi-hop mesh → E2E encryption → Incentives
+- Regression test gates at every phase boundary, covering all historical bugs
+
+#### Implementation (Phase 1)
+- **Protocol layer**: `RelayEnvelope` (routing wrapper), `RelayAnnounce` (relay discovery), new `MessageType` cases
+- **MPCRelay**: browses `janus-ai` for providers, advertises `janus-relay` for clients, per-peer session isolation, bidirectional forwarding with routing tables
+- **MPCBrowser**: dual browser (provider + relay), `forceRelayMode` toggle, `ConnectionMode` enum (`.direct` / `.relayed(relayName:)` / `.disconnected`)
+- **RelayView**: relay status UI with provider/client lists, forwarded message count, start/stop controls
+- **JanusClientApp**: client/relay mode switching via `@AppStorage("appMode")`
+- **DiscoveryView**: connection mode badge, settings menu with force relay toggle and relay mode switch
+- **Info.plist**: added `_janus-relay._tcp` and `_janus-relay._udp` Bonjour service types
+- 8 unit tests for relay protocol serialization round-trips (157 total tests, all pass)
+
+#### Device testing
+- Setup: Mac = provider, iPhone 1 = relay, iPhone 2 = client (force relay mode)
+- Prompt forwarding through relay: PASS
+- Multiple prompts, forwarded count increments: PASS
+- Relay stop → client disconnects: PASS
+- Relay restart → client auto-reconnects: PASS (after MPC reconnection fixes)
+- Payment/settlement through relay: PASS
+
+#### Bugs found and fixed during testing
+
+**Relay phone screen locks → relay dies:**
+- iOS suspends MPC sessions when app is backgrounded/locked
+- Fix: `UIApplication.shared.isIdleTimerDisabled = true` while relay is active
+- Documented iOS background execution limitations in RELAY_DESIGN.md (no background mode exists for MPC)
+
+**Client stuck at .connecting after relay restart:**
+- Two bugs: (1) `foundPeer` guard rejected peers unless `connectionState == .disconnected`, blocking recovery from `.connectionFailed`; (2) relay MPC session connected but cancelled the timeout before receiving provider info, leaving client in limbo
+- Fix: allow `.connectionFailed` in `foundPeer` guard, added 15s `relayInfoTimeout` for relay sessions that connect but don't send provider info
+
+**Client can't reconnect to same relay without force-quit:**
+- MPC caches peer state when browser stop/start happens too fast
+- Fix: clear all relay peer state in `startSearching()`, added 0.5s delay between stop and start browsing to let MPC clean up
+
+**Connection mode badge showing client's own name instead of relay name:**
+- `connectionMode = .relayed(relayName: peerID.displayName)` used client's peerID
+- Fix: changed to `relayPeerID?.displayName ?? "Relay"`
+
+#### Committed
+- `38d57ae`: "Phase 1 relay: single-hop message forwarding through intermediate iPhone" — 12 files, +1938/-74
+
+#### Phase 1 status: CORE COMPLETE
+
+### Next tasks
+
+**Immediate (before Phase 2):**
+- [ ] Direct-mode regression testing — both iPhones connecting directly to Mac (force relay OFF), verify all existing functionality still works
+- [ ] Multi-client direct regression — both iPhones as direct clients simultaneously, per-client session isolation
+- [ ] Disconnect/reconnect regression — kill app, lock screen, reconnect scenarios
+- [ ] Payment regression — full voucher + settlement flow on direct connection
+- [ ] Session persistence regression — kill/relaunch client and provider, verify session recovery
+
+**Phase 2: Robustness (next feature work):**
+- [ ] Relay disconnect handling — notify clients when provider drops, client fallback to direct
+- [ ] Request timeout propagation — relay sends ErrorResponse if provider doesn't respond
+- [ ] Multi-provider relay support — relay connects to multiple providers, routes by destinationID
+- [ ] Dual mode (relay + client on same phone) — relay phone can also send its own queries
+- [ ] Provider relay awareness — optional `relayedVia` field so provider knows direct vs relayed
+- [ ] Battery management — show level in RelayView, auto-stop at 20%
+- [ ] Relay auto-discovery updates — re-broadcast provider list on changes
