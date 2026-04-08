@@ -1577,3 +1577,72 @@ Full prioritized list of all remaining features across relay, transport, payment
 - **Near-term** (#1–7): finish relay robustness
 - **Medium-term** (#8–14): transport reliability + payment polish
 - **Long-term** (#15–19): mesh network with encryption, multi-hop, and incentives
+
+---
+
+## 2026-04-08
+
+### Relay Phase 2, Items 1–4: Request Timeout, Dual Mode, Auto-Fallback, Multi-Provider
+
+Four features implemented in a single session. Design docs at `docs/plans/01-04`.
+
+#### Feature #1: Request Timeout Propagation (commit 0b6fb9c)
+
+Relay tracks in-flight requests and sends `relayTimeout` error to the client if the provider doesn't respond within 15s (before the client's 20s timeout). On provider disconnect, sends `providerUnreachable` for all in-flight requests.
+
+#### Feature #2: Dual Mode — Relay + Client on Same Phone (commit c42f714)
+
+Phone can simultaneously relay for other clients AND send its own queries. `ProviderTransport` protocol abstracts the transport layer — `ClientEngine` works with either `MPCBrowser` (direct/relay) or `RelayLocalTransport` (dual mode zero-hop).
+
+**Key bug found during manual testing:** FIFO response queue assumed provider responses arrive in send order. Failed during interleaved two-round-trip flows (promptRequest→quoteResponse→voucherAuth→inferenceResponse) because voucherAuth timing is unpredictable across local vs remote clients. **Fix:** Replaced FIFO with `requestRouting: [String: RequestOrigin]` map keyed by requestID — order-independent routing.
+
+#### Feature #3: Auto-Fallback — Direct → Relay (commit 37ae519)
+
+After 2 consecutive direct connection timeouts, instead of stopping, the client continues browsing for both direct providers and relays. Whichever path connects first wins.
+
+#### Feature #4: Multi-Provider Relay Support
+
+When connected via relay, the client can see and switch between multiple providers. Provider picker UI (horizontal scroll) appears when >1 provider is available.
+
+##### Files changed
+- `MPCBrowser.swift` — `relayProviders` dict, `selectRelayProvider()`, `handleRelayData()` stores all ServiceAnnounces, prunes on RelayAnnounce
+- `MPCRelay.swift` — `RelayLocalTransport.relayProviders`, `selectProvider()`, Combine subscription from relay's `reachableProviders`, `sendLocalMessage()` routes to selected provider
+- `ClientEngine.swift` — `availableProviders` published array, `selectProvider()` forwarding for both MPCBrowser and RelayLocalTransport
+- `DiscoveryView.swift` + `DualModeView.swift` — provider picker UI
+- `SessionManager.swift` — per-provider persistence (`client_session_{providerID}.json`)
+- `MultiProviderTests.swift` — 8 new unit tests
+
+##### Bugs found and fixed during multi-provider testing
+1. **DualModeView missing picker** — picker was added to DiscoveryView but not DualModeView. Dual mode couldn't switch providers.
+2. **Session overwrite on provider switch** — single `client_session.json` meant switching Provider A→B overwrote A's session. Credits reset to 100 on switch-back. **Fix:** per-provider filenames (`client_session_{providerID}.json`) with legacy fallback.
+3. **`sendLocalMessage` routing** — always picked first connected provider session instead of the selected one. **Fix:** route via `providerRoutes[selectedProviderID]`.
+
+##### Manual testing (2026-04-08)
+
+**Setup:** 2 Macs (MacBook Pro + Mac Mini) running JanusProvider, Phone A (dual mode/relay), Phone B (client mode).
+
+**Dual mode multi-provider (Phone A):**
+- [x] Relay stats show 2 providers
+- [x] Provider picker appears with both Macs
+- [x] Send query to Mac A — correct response
+- [x] Switch to Mac B, send query — correct response from Mac B
+- [x] Credits persist across provider switches (A→B→A, no reset)
+
+**Client via relay multi-provider (Phone B, Force Relay Mode):**
+- [x] Both providers visible in picker
+- [x] Queries route to selected provider correctly
+
+**Provider disconnect recovery:**
+- [x] Quit Mac B — Phone A auto-switches to Mac A, picker disappears
+- [x] Restart Mac B — provider reappears in picker
+
+##### Test suite: 38 tests (8 new), all passing
+- `MultiProviderTests.swift` — 8 tests: selection, unknown ID rejection, cleanup on start/disconnect, Combine forwarding to ClientEngine, selectProvider delegation
+
+##### Feature plan docs created
+- `docs/plans/01-request-timeout.md`
+- `docs/plans/02-dual-mode.md`
+- `docs/plans/03-auto-fallback.md`
+- `docs/plans/04-multi-provider.md`
+- `docs/plans/05-direct-multi-provider.md` (planned, not yet implemented)
+- **Long-term** (#15–19): mesh network with encryption, multi-hop, and incentives
