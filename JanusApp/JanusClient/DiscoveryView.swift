@@ -162,9 +162,9 @@ struct DiscoveryView: View {
                 .font(.system(size: 48))
                 .foregroundStyle(engine.connectionState == .connectionFailed ? .orange : .secondary)
             if engine.connectionState == .connectionFailed {
-                Text("Provider found but can't connect")
+                Text("Direct connection failed")
                     .font(.headline)
-                Text("WiFi must be enabled on both devices.\nInternet is not required — just the WiFi radio.")
+                Text("Searching for nearby relays...\nWiFi must be enabled on both devices.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

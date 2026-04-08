@@ -268,10 +268,19 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
             guard !Task.isCancelled, autoReconnect, connectionState == .connecting else { return }
             consecutiveTimeouts += 1
             if consecutiveTimeouts >= maxTimeoutsBeforeWarning {
-                print("Connection failed after \(consecutiveTimeouts) attempts — WiFi likely off")
+                print("Direct connection failed after \(consecutiveTimeouts) attempts — falling back to relay search")
                 connectionState = .connectionFailed
+                // Don't stop — start relay browser as fallback, keep direct running for race
                 stopProviderBrowser()
                 stopRelayBrowser()
+                resetProviderSession()
+                resetRelaySession()
+                if forceRelayMode {
+                    startRelayBrowser()
+                } else {
+                    startProviderBrowser()
+                    startRelayBrowser()
+                }
             } else {
                 print("Connection timeout (\(consecutiveTimeouts)/\(maxTimeoutsBeforeWarning)) — retrying...")
                 connectionState = .disconnected
