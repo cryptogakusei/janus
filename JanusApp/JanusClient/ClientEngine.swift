@@ -19,6 +19,8 @@ class ClientEngine: ObservableObject {
     @Published var connectedProvider: ServiceAnnounce?
     @Published var connectionMode: ConnectionMode = .disconnected
     @Published var sessionReady = false
+    /// All providers available via relay (empty when direct-connected or only one provider).
+    @Published var availableProviders: [ServiceAnnounce] = []
 
     // Request flow state
     @Published var requestState: RequestState = .idle
@@ -93,11 +95,23 @@ class ClientEngine: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // Forward relay providers list from browser (if applicable)
+        if let browser = browserRef {
+            browser.$relayProviders
+                .map { Array($0.values) }
+                .assign(to: &$availableProviders)
+        }
+
         transport.onMessageReceived = { [weak self] envelope in
             Task { @MainActor in
                 self?.handleMessage(envelope)
             }
         }
+    }
+
+    /// Switch to a different provider available through the relay.
+    func selectProvider(_ providerID: String) {
+        browserRef?.selectRelayProvider(providerID)
     }
 
     func startSearching() {

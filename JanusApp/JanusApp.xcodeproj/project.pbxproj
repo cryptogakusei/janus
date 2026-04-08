@@ -44,6 +44,7 @@
 		C400000002 /* ConnectionModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000002 /* ConnectionModeTests.swift */; };
 		C400000003 /* RelayDisconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000003 /* RelayDisconnectTests.swift */; };
 		C400000004 /* DualModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000004 /* DualModeTests.swift */; };
+		C400000005 /* MultiProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000005 /* MultiProviderTests.swift */; };
 		C300000006 /* JanusShared in Frameworks */ = {isa = PBXBuildFile; productRef = D100000003 /* JanusShared */; };
 /* End PBXBuildFile section */
 
@@ -78,6 +79,7 @@
 		A300000002 /* ConnectionModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionModeTests.swift; sourceTree = "<group>"; };
 		A300000003 /* RelayDisconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayDisconnectTests.swift; sourceTree = "<group>"; };
 		A300000004 /* DualModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DualModeTests.swift; sourceTree = "<group>"; };
+		A300000005 /* MultiProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiProviderTests.swift; sourceTree = "<group>"; };
 
 		/* Products */
 		B100000001 /* JanusClient.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JanusClient.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -178,6 +180,7 @@
 				A300000002 /* ConnectionModeTests.swift */,
 				A300000003 /* RelayDisconnectTests.swift */,
 				A300000004 /* DualModeTests.swift */,
+				A300000005 /* MultiProviderTests.swift */,
 			);
 			path = JanusClientTests;
 			sourceTree = "<group>";
@@ -340,6 +343,7 @@
 				C400000002 /* ConnectionModeTests.swift in Sources */,
 				C400000003 /* RelayDisconnectTests.swift in Sources */,
 				C400000004 /* DualModeTests.swift in Sources */,
+				C400000005 /* MultiProviderTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

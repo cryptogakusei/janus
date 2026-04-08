@@ -14,6 +14,9 @@ struct DiscoveryView: View {
                 connectionStatusView
 
                 if let provider = engine.connectedProvider {
+                    if engine.availableProviders.count > 1 {
+                        providerPicker
+                    }
                     providerInfoCard(provider)
 
                     if engine.sessionReady {
@@ -105,6 +108,41 @@ struct DiscoveryView: View {
                     .cornerRadius(4)
             case .disconnected:
                 EmptyView()
+            }
+        }
+    }
+
+    private var providerPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Available Providers")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(engine.availableProviders.sorted(by: { $0.providerName < $1.providerName }), id: \.providerID) { provider in
+                        let isSelected = provider.providerID == engine.connectedProvider?.providerID
+                        Button {
+                            engine.selectProvider(provider.providerID)
+                        } label: {
+                            VStack(spacing: 2) {
+                                Text(provider.providerName)
+                                    .font(.caption.bold())
+                                Text(provider.modelTier)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(isSelected ? Color.accentColor.opacity(0.15) : Color(.secondarySystemBackground))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 2)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
         }
     }

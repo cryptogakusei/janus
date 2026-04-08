@@ -22,6 +22,10 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
     @Published var connectionState: ConnectionState = .disconnected
     @Published var connectionMode: ConnectionMode = .disconnected
 
+    /// All providers available through the relay (providerID → ServiceAnnounce).
+    /// Only populated when connected via relay with multiple providers.
+    @Published var relayProviders: [String: ServiceAnnounce] = [:]
+
     /// Developer toggle: when true, ignores direct providers and only connects via relays.
     @Published var forceRelayMode = false
 
@@ -94,6 +98,7 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
         connectionState = .disconnected
         connectionMode = .disconnected
         connectedProvider = nil
+        relayProviders = [:]
         consecutiveTimeouts = 0
         // Clear all peer state from previous connections
         providerPeerID = nil
@@ -173,6 +178,7 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
         providerSession.disconnect()
         relaySession.disconnect()
         connectedProvider = nil
+        relayProviders = [:]
         providerPeerID = nil
         relayPeerID = nil
         relayProviderID = nil
@@ -226,9 +232,23 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
 
     /// Handle the case where the relay reports our provider is no longer reachable.
     private func handleProviderLostViaRelay() {
+        // Remove the lost provider from relayProviders; auto-select next if available
+        if let lostID = relayProviderID {
+            relayProviders.removeValue(forKey: lostID)
+        }
         connectedProvider = nil
         relayProviderID = nil
         relayRouteID = nil
+
+        // If other providers are still available via relay, auto-select the next one
+        if let (nextID, nextAnnounce) = relayProviders.first {
+            connectedProvider = nextAnnounce
+            relayProviderID = nextID
+            relayRouteID = UUID().uuidString
+            print("Auto-switched to next relay provider: \(nextAnnounce.providerName)")
+            return
+        }
+
         connectionState = .disconnected
         connectionMode = .disconnected
 
@@ -367,6 +387,15 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
     private func isRelayPeer(_ peer: MCPeerID) -> Bool {
         peer == relayPeerID || relaySession.connectedPeers.contains(peer)
     }
+
+    /// Switch to a different provider available through the relay.
+    func selectRelayProvider(_ providerID: String) {
+        guard let announce = relayProviders[providerID] else { return }
+        connectedProvider = announce
+        relayProviderID = providerID
+        relayRouteID = UUID().uuidString
+        print("Switched to relay provider: \(announce.providerName)")
+    }
 }
 
 // MARK: - MCNearbyServiceBrowserDelegate
@@ -481,6 +510,7 @@ extension MPCBrowser: MCSessionDelegate {
             if connectionMode != .direct {
                 // Only handle relay disconnect if we're not already on direct
                 connectedProvider = nil
+                relayProviders = [:]
                 relayPeerID = nil
                 relayProviderID = nil
                 relayRouteID = nil
@@ -532,14 +562,17 @@ extension MPCBrowser: MCSessionDelegate {
             if envelope.type == .relayAnnounce {
                 if let announce = try? envelope.unwrap(as: RelayAnnounce.self) {
                     print("Received RelayAnnounce: \(announce.relayName) with \(announce.reachableProviders.count) provider(s)")
+                    // Prune providers no longer in the relay's reachable list
+                    let reachableIDs = Set(announce.reachableProviders.map(\.providerID))
+                    for id in relayProviders.keys where !reachableIDs.contains(id) {
+                        relayProviders.removeValue(forKey: id)
+                        print("Provider \(id.prefix(8))... removed from relay providers")
+                    }
                     // Check if our current provider is still reachable
-                    if let currentProviderID = relayProviderID {
-                        let stillAvailable = announce.reachableProviders.contains { $0.providerID == currentProviderID }
-                        if !stillAvailable {
-                            print("Provider \(currentProviderID.prefix(8))... no longer reachable via relay")
-                            handleProviderLostViaRelay()
-                            return
-                        }
+                    if let currentProviderID = relayProviderID, !reachableIDs.contains(currentProviderID) {
+                        print("Provider \(currentProviderID.prefix(8))... no longer reachable via relay")
+                        handleProviderLostViaRelay()
+                        return
                     }
                     // If we don't have a provider yet, pick the first one
                     if relayProviderID == nil, let first = announce.reachableProviders.first {
@@ -568,18 +601,23 @@ extension MPCBrowser: MCSessionDelegate {
         case .serviceAnnounce:
             if let announce = try? innerEnvelope.unwrap(as: ServiceAnnounce.self) {
                 relayInfoTimeoutTask?.cancel()
-                connectedProvider = announce
-                relayProviderID = announce.providerID
-                connectionState = .connected
-                connectionMode = .relayed(relayName: relayPeerID?.displayName ?? "Relay")
-                // Stop browsing — we're connected
-                if forceRelayMode {
-                    stopRelayBrowser()
-                } else {
-                    stopProviderBrowser()
-                    stopRelayBrowser()
+                // Store in relay providers dict
+                relayProviders[announce.providerID] = announce
+                // Set as connected provider if it's the one we're targeting, or auto-select first
+                if relayProviderID == nil || relayProviderID == announce.providerID {
+                    connectedProvider = announce
+                    relayProviderID = announce.providerID
+                    connectionState = .connected
+                    connectionMode = .relayed(relayName: relayPeerID?.displayName ?? "Relay")
+                    // Stop browsing — we're connected
+                    if forceRelayMode {
+                        stopRelayBrowser()
+                    } else {
+                        stopProviderBrowser()
+                        stopRelayBrowser()
+                    }
                 }
-                print("Relayed connection to provider: \(announce.providerName) via \(peerID.displayName)")
+                print("Relay provider available: \(announce.providerName) (\(relayProviders.count) total)")
             }
         case .ping, .pong:
             break
