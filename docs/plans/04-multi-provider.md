@@ -1,6 +1,6 @@
 # Feature #4: Multi-Provider Relay Support
 
-**Status:** Planned
+**Status:** Implemented (2026-04-08)
 **Dependencies:** #2 (Dual Mode) — completed
 
 ## Context
@@ -109,15 +109,23 @@ Clear `relayProviders` in:
 
 ---
 
-## Files to modify
+## Files changed
 
-| File | Change | Est. Lines |
-|------|--------|-----------|
-| `MPCBrowser.swift` | `relayProviders` dict, `selectRelayProvider()`, update `handleRelayData()` | ~30 |
-| `ClientEngine.swift` | `availableProviders` published, `selectProvider()`, Combine forwarding | ~15 |
-| `DiscoveryView.swift` | Provider picker UI when multiple available | ~25 |
+| File | Change |
+|------|--------|
+| `MPCBrowser.swift` | `relayProviders` dict, `selectRelayProvider()`, update `handleRelayData()`, pruning on `RelayAnnounce`, cleanup in 5 spots |
+| `MPCRelay.swift` | `RelayLocalTransport.relayProviders`, `selectProvider()`, Combine subscription from relay's `reachableProviders`, `sendLocalMessage` routes to selected provider |
+| `ClientEngine.swift` | `availableProviders` published, `selectProvider()` forwarding for both MPCBrowser and RelayLocalTransport |
+| `DiscoveryView.swift` | Provider picker UI (horizontal scroll, appears when >1 provider) |
+| `DualModeView.swift` | Same provider picker for dual mode |
+| `SessionManager.swift` | Per-provider persistence (`client_session_{providerID}.json`) — fixes session overwrite on provider switch |
+| `MultiProviderTests.swift` | **NEW** — 8 unit tests for selection, cleanup, Combine forwarding |
 
-**Total:** ~70 lines changed. No new files.
+## Bugs found during testing
+
+1. **DualModeView missing picker** — picker was only added to DiscoveryView, not DualModeView
+2. **Session overwrite** — single `client_session.json` file meant switching providers overwrote the previous session. Credits reset to 100 on switch-back. Fixed with per-provider filenames.
+3. **`sendLocalMessage` routing** — always picked first connected provider session instead of the selected one. Fixed to route via `providerRoutes[selectedProviderID]`.
 
 ---
 
