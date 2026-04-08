@@ -5,6 +5,7 @@ import JanusShared
 struct RelayView: View {
     @StateObject private var relay = MPCRelay()
     var switchToClient: (() -> Void)?
+    var switchToDual: (() -> Void)?
 
     var body: some View {
         NavigationStack {
@@ -20,11 +21,21 @@ struct RelayView: View {
             .navigationTitle("Janus Relay")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        relay.stop()
-                        switchToClient?()
+                    Menu {
+                        Button {
+                            relay.stop()
+                            switchToClient?()
+                        } label: {
+                            Label("Client Only", systemImage: "iphone")
+                        }
+                        Button {
+                            relay.stop()
+                            switchToDual?()
+                        } label: {
+                            Label("Dual Mode", systemImage: "point.3.connected.trianglepath.dotted")
+                        }
                     } label: {
-                        Label("Client Mode", systemImage: "iphone")
+                        Image(systemName: "ellipsis.circle")
                     }
                 }
             }

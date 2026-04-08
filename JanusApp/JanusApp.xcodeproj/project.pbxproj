@@ -29,6 +29,8 @@
 		C100000009 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000010 /* LoginView.swift */; };
 		C100000010 /* MPCRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000011 /* MPCRelay.swift */; };
 		C100000011 /* RelayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000012 /* RelayView.swift */; };
+		C100000012 /* ProviderTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000013 /* ProviderTransport.swift */; };
+		C100000014 /* DualModeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000015 /* DualModeView.swift */; };
 
 		/* SPM product refs */
 		C300000001 /* JanusShared in Frameworks */ = {isa = PBXBuildFile; productRef = D100000001 /* JanusShared */; };
@@ -41,6 +43,7 @@
 		C400000001 /* ClientEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000001 /* ClientEngineTests.swift */; };
 		C400000002 /* ConnectionModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000002 /* ConnectionModeTests.swift */; };
 		C400000003 /* RelayDisconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000003 /* RelayDisconnectTests.swift */; };
+		C400000004 /* DualModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000004 /* DualModeTests.swift */; };
 		C300000006 /* JanusShared in Frameworks */ = {isa = PBXBuildFile; productRef = D100000003 /* JanusShared */; };
 /* End PBXBuildFile section */
 
@@ -58,6 +61,8 @@
 		A100000010 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		A100000011 /* MPCRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPCRelay.swift; sourceTree = "<group>"; };
 		A100000012 /* RelayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayView.swift; sourceTree = "<group>"; };
+		A100000013 /* ProviderTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderTransport.swift; sourceTree = "<group>"; };
+		A100000015 /* DualModeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DualModeView.swift; sourceTree = "<group>"; };
 
 		/* JanusProvider source files */
 		A200000001 /* JanusProviderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusProviderApp.swift; sourceTree = "<group>"; };
@@ -72,6 +77,7 @@
 		A300000001 /* ClientEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClientEngineTests.swift; sourceTree = "<group>"; };
 		A300000002 /* ConnectionModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionModeTests.swift; sourceTree = "<group>"; };
 		A300000003 /* RelayDisconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayDisconnectTests.swift; sourceTree = "<group>"; };
+		A300000004 /* DualModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DualModeTests.swift; sourceTree = "<group>"; };
 
 		/* Products */
 		B100000001 /* JanusClient.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JanusClient.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -134,6 +140,8 @@
 				A100000010 /* LoginView.swift */,
 				A100000011 /* MPCRelay.swift */,
 				A100000012 /* RelayView.swift */,
+				A100000013 /* ProviderTransport.swift */,
+				A100000015 /* DualModeView.swift */,
 				A100000004 /* Info.plist */,
 			);
 			path = JanusClient;
@@ -169,6 +177,7 @@
 				A300000001 /* ClientEngineTests.swift */,
 				A300000002 /* ConnectionModeTests.swift */,
 				A300000003 /* RelayDisconnectTests.swift */,
+				A300000004 /* DualModeTests.swift */,
 			);
 			path = JanusClientTests;
 			sourceTree = "<group>";
@@ -305,6 +314,8 @@
 				C100000009 /* LoginView.swift in Sources */,
 				C100000010 /* MPCRelay.swift in Sources */,
 				C100000011 /* RelayView.swift in Sources */,
+				C100000012 /* ProviderTransport.swift in Sources */,
+				C100000014 /* DualModeView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -328,6 +339,7 @@
 				C400000001 /* ClientEngineTests.swift in Sources */,
 				C400000002 /* ConnectionModeTests.swift in Sources */,
 				C400000003 /* RelayDisconnectTests.swift in Sources */,
+				C400000004 /* DualModeTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

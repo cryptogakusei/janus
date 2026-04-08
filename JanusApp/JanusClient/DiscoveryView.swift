@@ -6,6 +6,7 @@ struct DiscoveryView: View {
     @ObservedObject var auth: PrivyAuthManager
     @StateObject private var engine = ClientEngine()
     var switchToRelay: (() -> Void)?
+    var switchToDual: (() -> Void)?
 
     var body: some View {
         NavigationStack {
@@ -85,7 +86,7 @@ struct DiscoveryView: View {
 
     private var connectionModeBadge: some View {
         Group {
-            switch engine.browser.connectionMode {
+            switch engine.connectionMode {
             case .direct:
                 Text("Direct")
                     .font(.caption2.weight(.semibold))
@@ -110,16 +111,24 @@ struct DiscoveryView: View {
 
     private var settingsMenu: some View {
         Menu {
-            Toggle("Force Relay Mode", isOn: Binding(
-                get: { engine.browser.forceRelayMode },
-                set: { engine.browser.forceRelayMode = $0 }
-            ))
+            if let browser = engine.browserRef {
+                Toggle("Force Relay Mode", isOn: Binding(
+                    get: { browser.forceRelayMode },
+                    set: { browser.forceRelayMode = $0 }
+                ))
+            }
             Divider()
             Button {
                 engine.stopSearching()
                 switchToRelay?()
             } label: {
                 Label("Switch to Relay Mode", systemImage: "antenna.radiowaves.left.and.right")
+            }
+            Button {
+                engine.stopSearching()
+                switchToDual?()
+            } label: {
+                Label("Switch to Dual Mode", systemImage: "point.3.connected.trianglepath.dotted")
             }
         } label: {
             Image(systemName: "gearshape")
@@ -138,7 +147,7 @@ struct DiscoveryView: View {
     }
 
     private var statusColor: Color {
-        switch engine.browser.connectionState {
+        switch engine.connectionState {
         case .disconnected: return .red
         case .connecting: return .yellow
         case .connected: return .green
@@ -148,11 +157,11 @@ struct DiscoveryView: View {
 
     private var emptyStateView: some View {
         VStack(spacing: 12) {
-            Image(systemName: engine.browser.connectionState == .connectionFailed
+            Image(systemName: engine.connectionState == .connectionFailed
                   ? "wifi.exclamationmark" : "antenna.radiowaves.left.and.right")
                 .font(.system(size: 48))
-                .foregroundStyle(engine.browser.connectionState == .connectionFailed ? .orange : .secondary)
-            if engine.browser.connectionState == .connectionFailed {
+                .foregroundStyle(engine.connectionState == .connectionFailed ? .orange : .secondary)
+            if engine.connectionState == .connectionFailed {
                 Text("Provider found but can't connect")
                     .font(.headline)
                 Text("WiFi must be enabled on both devices.\nInternet is not required — just the WiFi radio.")

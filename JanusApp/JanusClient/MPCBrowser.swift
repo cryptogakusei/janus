@@ -10,7 +10,11 @@ import UIKit
 /// - **Direct**: client ↔ provider via MPC (browses `janus-ai`)
 /// - **Relayed**: client ↔ relay ↔ provider (browses `janus-relay`)
 @MainActor
-class MPCBrowser: NSObject, ObservableObject {
+class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
+
+    // Typealiases for backward compatibility (enums moved to ProviderTransport.swift)
+    typealias ConnectionState = JanusClient.ConnectionState
+    typealias ConnectionMode = JanusClient.ConnectionMode
 
     /// Currently discovered provider info (nil if no provider connected).
     @Published var connectedProvider: ServiceAnnounce?
@@ -21,27 +25,11 @@ class MPCBrowser: NSObject, ObservableObject {
     /// Developer toggle: when true, ignores direct providers and only connects via relays.
     @Published var forceRelayMode = false
 
-    enum ConnectionState: String {
-        case disconnected
-        case connecting
-        case connected
-        /// Provider found via Bluetooth but session can't be established (WiFi likely off on provider).
-        case connectionFailed = "Connection Failed"
-    }
+    // MARK: - ProviderTransport publisher accessors
 
-    enum ConnectionMode: Equatable {
-        case disconnected
-        case direct
-        case relayed(relayName: String)
-
-        var displayLabel: String {
-            switch self {
-            case .disconnected: return "Disconnected"
-            case .direct: return "Direct"
-            case .relayed(let name): return "via \(name)"
-            }
-        }
-    }
+    var connectedProviderPublisher: Published<ServiceAnnounce?>.Publisher { $connectedProvider }
+    var isSearchingPublisher: Published<Bool>.Publisher { $isSearching }
+    var connectionStatePublisher: Published<ConnectionState>.Publisher { $connectionState }
 
     private let providerServiceType = "janus-ai"
     private let relayServiceType = "janus-relay"

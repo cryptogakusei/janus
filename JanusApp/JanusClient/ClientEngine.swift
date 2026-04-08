@@ -5,17 +5,19 @@ import JanusShared
 /// Orchestrates the client's request flow over MPC.
 ///
 /// State machine: idle → waitingForQuote → waitingForResponse → complete/error
-/// Owns the MPCBrowser and SessionManager, and drives the UI.
+/// Owns the transport and SessionManager, and drives the UI.
 ///
-/// Forwards browser's published properties so SwiftUI views can observe
+/// Forwards transport's published properties so SwiftUI views can observe
 /// connection state changes through this single object.
 @MainActor
 class ClientEngine: ObservableObject {
 
-    // Forwarded browser state (so SwiftUI can observe)
+    // Forwarded transport state (so SwiftUI can observe)
     @Published var isSearching = false
     @Published var connectionStatus = "Disconnected"
+    @Published var connectionState: ConnectionState = .disconnected
     @Published var connectedProvider: ServiceAnnounce?
+    @Published var connectionMode: ConnectionMode = .disconnected
     @Published var sessionReady = false
 
     // Request flow state
@@ -38,7 +40,10 @@ class ClientEngine: ObservableObject {
         case error = "Error"
     }
 
-    let browser: MPCBrowser
+    let transport: any ProviderTransport
+    /// Typed reference for browser-specific features (force relay toggle).
+    /// Nil when transport is RelayLocalTransport (dual mode).
+    let browserRef: MPCBrowser?
     private(set) var sessionManager: SessionManager?
     private var cancellables = Set<AnyCancellable>()
     var pendingRequestID: String?
@@ -50,18 +55,26 @@ class ClientEngine: ObservableObject {
     /// When set, SessionManager uses it for voucher signing and on-chain ops.
     var walletProvider: (any WalletProvider)?
 
-    init() {
-        self.browser = MPCBrowser()
+    convenience init() {
+        self.init(transport: MPCBrowser())
+    }
 
-        // Forward browser published properties to trigger SwiftUI updates
-        browser.$isSearching
+    init(transport: any ProviderTransport) {
+        self.transport = transport
+        self.browserRef = transport as? MPCBrowser
+
+        // Forward transport published properties to trigger SwiftUI updates
+        transport.isSearchingPublisher
             .assign(to: &$isSearching)
-        browser.$connectionState
+        transport.connectionStatePublisher
+            .assign(to: &$connectionState)
+        transport.connectionStatePublisher
             .map { $0.rawValue.capitalized }
             .assign(to: &$connectionStatus)
-        browser.$connectedProvider
+        transport.connectedProviderPublisher
             .sink { [weak self] provider in
                 self?.connectedProvider = provider
+                self?.connectionMode = self?.transport.connectionMode ?? .disconnected
                 if let provider {
                     self?.createSession(providerID: provider.providerID)
                 } else {
@@ -75,11 +88,12 @@ class ClientEngine: ObservableObject {
                     }
                     // Don't nil sessionManager — it's persisted and can be reused on reconnect
                     self?.sessionReady = false
+                    self?.connectionMode = .disconnected
                 }
             }
             .store(in: &cancellables)
 
-        browser.onMessageReceived = { [weak self] envelope in
+        transport.onMessageReceived = { [weak self] envelope in
             Task { @MainActor in
                 self?.handleMessage(envelope)
             }
@@ -87,11 +101,11 @@ class ClientEngine: ObservableObject {
     }
 
     func startSearching() {
-        browser.startSearching()
+        transport.startSearching()
     }
 
     func stopSearching() {
-        browser.stopSearching()
+        transport.stopSearching()
     }
 
     /// Create or restore a session for the connected provider.
@@ -159,7 +173,7 @@ class ClientEngine: ObservableObject {
                 senderID: session.sessionGrant.sessionID,
                 payload: request
             )
-            try browser.send(envelope)
+            try transport.send(envelope)
             requestState = .waitingForQuote
             errorMessage = nil
             currentQuote = nil
@@ -211,7 +225,7 @@ class ClientEngine: ObservableObject {
                     senderID: session.sessionGrant.sessionID,
                     payload: auth
                 )
-                try browser.send(envelope)
+                try transport.send(envelope)
                 requestState = .waitingForResponse
             } catch {
                 errorMessage = "Failed to authorize: \(error.localizedDescription)"
@@ -340,7 +354,7 @@ class ClientEngine: ObservableObject {
     /// Also proactively checks connection health before the timer starts.
     private func startRequestTimeout(requestID: String) {
         requestTimeoutTask?.cancel()
-        browser.checkConnectionHealth()
+        transport.checkConnectionHealth()
         requestTimeoutTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 20_000_000_000) // 20 seconds
             guard !Task.isCancelled,

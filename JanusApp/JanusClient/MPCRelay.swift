@@ -46,6 +46,20 @@ class MPCRelay: NSObject, ObservableObject {
     /// Maps provider MPC peer → provider ID (for routing provider responses to clients).
     private var peerToProviderID: [MCPeerID: String] = [:]
 
+    // MARK: - Dual mode (local client)
+
+    /// When non-nil, the relay also acts as a client via this local transport.
+    private(set) var localTransport: RelayLocalTransport?
+
+    /// Maps requestID → routing destination for dual-mode response routing.
+    /// When a response arrives, we extract its requestID and look up who sent it.
+    private var requestRouting: [String: RequestOrigin] = [:]
+
+    private enum RequestOrigin {
+        case local
+        case remote(clientPeer: MCPeerID)
+    }
+
     // MARK: - In-flight request tracking
 
     /// Tracks forwarded requests awaiting a response from the provider.
@@ -87,6 +101,7 @@ class MPCRelay: NSObject, ObservableObject {
         clientRoutes.removeAll()
         peerToProviderID.removeAll()
         cancelAllInFlightTimeouts()
+        requestRouting.removeAll()
 
         // Keep screen awake so MPC sessions survive
         UIApplication.shared.isIdleTimerDisabled = true
@@ -112,6 +127,7 @@ class MPCRelay: NSObject, ObservableObject {
         clientRoutes.removeAll()
         peerToProviderID.removeAll()
         cancelAllInFlightTimeouts()
+        requestRouting.removeAll()
         print("[Relay] Stopped")
     }
 
@@ -211,6 +227,16 @@ class MPCRelay: NSObject, ObservableObject {
                 providerID: providerID,
                 messageType: innerEnvelope.type
             )
+            // Track requestID for dual-mode response routing
+            if localTransport != nil {
+                if innerEnvelope.type == .promptRequest,
+                   let request = try? innerEnvelope.unwrap(as: PromptRequest.self) {
+                    requestRouting[request.requestID] = .remote(clientPeer: clientPeer)
+                } else if innerEnvelope.type == .voucherAuthorization,
+                          let auth = try? innerEnvelope.unwrap(as: VoucherAuthorization.self) {
+                    requestRouting[auth.requestID] = .remote(clientPeer: clientPeer)
+                }
+            }
         }
 
         // Unwrap and send bare MessageEnvelope to provider (provider transparency)
@@ -239,7 +265,6 @@ class MPCRelay: NSObject, ObservableObject {
         }
 
         // Look up which client this response is for
-        let senderID = envelope.senderID
         guard let providerID = peerToProviderID[providerPeer] else {
             print("[Relay] Unknown provider peer — cannot route response")
             return
@@ -427,6 +452,106 @@ class MPCRelay: NSObject, ObservableObject {
     private func isProviderPeer(_ peer: MCPeerID) -> Bool {
         providerSessions[peer] != nil
     }
+
+    /// Extract requestID from a provider response envelope for routing.
+    private func extractRequestID(from envelope: MessageEnvelope) -> String? {
+        switch envelope.type {
+        case .quoteResponse:
+            return (try? envelope.unwrap(as: QuoteResponse.self))?.requestID
+        case .inferenceResponse:
+            return (try? envelope.unwrap(as: InferenceResponse.self))?.requestID
+        case .errorResponse:
+            return (try? envelope.unwrap(as: ErrorResponse.self))?.requestID
+        default:
+            return nil
+        }
+    }
+
+    // MARK: - Dual mode
+
+    /// Enable dual mode: the relay also acts as a client.
+    /// Returns a `RelayLocalTransport` that `ClientEngine` can use to send/receive messages.
+    func enableLocalClient() -> RelayLocalTransport {
+        let transport = RelayLocalTransport(relay: self)
+        localTransport = transport
+        // If we're already connected to a provider, mirror that state
+        if let announce = reachableProviders.values.first {
+            transport.connectedProvider = announce
+            transport.connectionState = .connected
+        }
+        return transport
+    }
+
+    /// Send a message from the local client directly to the upstream provider.
+    /// Called by `RelayLocalTransport.send()`.
+    func sendLocalMessage(_ envelope: MessageEnvelope) throws {
+        guard let (providerPeer, session) = providerSessions.first(where: {
+            $0.value.connectedPeers.contains($0.key)
+        }) else {
+            throw NSError(domain: "MPCRelay", code: 1, userInfo: [NSLocalizedDescriptionKey: "No provider connected"])
+        }
+
+        let data = try envelope.serialized()
+        try session.send(data, toPeers: [providerPeer], with: .reliable)
+
+        // Track requestID for response routing
+        if envelope.type == .promptRequest {
+            if let request = try? envelope.unwrap(as: PromptRequest.self) {
+                requestRouting[request.requestID] = .local
+            }
+        } else if envelope.type == .voucherAuthorization {
+            if let auth = try? envelope.unwrap(as: VoucherAuthorization.self) {
+                requestRouting[auth.requestID] = .local
+            }
+        }
+        forwardedCount += 1
+        print("[Relay] Local client→provider (type: \(envelope.type)) count=\(forwardedCount)")
+    }
+}
+
+// MARK: - RelayLocalTransport
+
+/// Lightweight transport adapter that lets `ClientEngine` talk to a provider
+/// through the relay's existing MPC session, without going over the network.
+@MainActor
+class RelayLocalTransport: ObservableObject, ProviderTransport {
+    @Published var connectedProvider: ServiceAnnounce?
+    @Published var isSearching: Bool = false
+    @Published var connectionState: ConnectionState = .disconnected
+
+    var connectionMode: ConnectionMode {
+        connectedProvider != nil ? .direct : .disconnected
+    }
+    var onMessageReceived: ((MessageEnvelope) -> Void)?
+
+    var connectedProviderPublisher: Published<ServiceAnnounce?>.Publisher { $connectedProvider }
+    var isSearchingPublisher: Published<Bool>.Publisher { $isSearching }
+    var connectionStatePublisher: Published<ConnectionState>.Publisher { $connectionState }
+
+    private weak var relay: MPCRelay?
+
+    init(relay: MPCRelay) {
+        self.relay = relay
+    }
+
+    func send(_ envelope: MessageEnvelope) throws {
+        guard let relay else {
+            throw NSError(domain: "RelayLocalTransport", code: 1, userInfo: [NSLocalizedDescriptionKey: "Relay deallocated"])
+        }
+        try relay.sendLocalMessage(envelope)
+    }
+
+    func startSearching() {
+        // No-op — relay handles discovery
+    }
+
+    func stopSearching() {
+        // No-op — relay handles discovery
+    }
+
+    func checkConnectionHealth() {
+        // No-op — local path, always healthy if relay is running
+    }
 }
 
 // MARK: - MCNearbyServiceBrowserDelegate (discovering providers)
@@ -500,6 +625,13 @@ extension MPCRelay: MCSessionDelegate {
                 print("[Relay] Provider disconnected: \(peer.displayName)")
             }
             providerSessions.removeValue(forKey: peer)
+            // Clear all routing entries — responses won't arrive from disconnected provider
+            requestRouting.removeAll()
+            // Notify local transport in dual mode
+            if reachableProviders.isEmpty {
+                localTransport?.connectedProvider = nil
+                localTransport?.connectionState = .disconnected
+            }
             // Notify all connected clients that provider list changed
             for clientPeer in connectedClients.keys {
                 sendRelayAnnounce(to: clientPeer)
@@ -525,8 +657,12 @@ extension MPCRelay: MCSessionDelegate {
             print("[Relay] Client connected: \(peer.displayName) (total: \(connectedClients.count))")
         case .notConnected:
             if let name = connectedClients.removeValue(forKey: peer) {
-                // Clean up routes and in-flight requests for this client
+                // Clean up routes, request routing, and in-flight requests for this client
                 clientRoutes = clientRoutes.filter { $0.value != peer }
+                requestRouting = requestRouting.filter {
+                    if case .remote(let p) = $0.value { return p != peer }
+                    return true
+                }
                 cancelInFlightRequests(for: peer)
                 clientSessions.removeValue(forKey: peer)
                 print("[Relay] Client disconnected: \(name) (total: \(connectedClients.count))")
@@ -561,6 +697,9 @@ extension MPCRelay: MCSessionDelegate {
                 providerRoutes[announce.providerID] = peerID
                 peerToProviderID[peerID] = announce.providerID
                 startAdvertisingIfNeeded()
+                // Notify local transport in dual mode
+                localTransport?.connectedProvider = announce
+                localTransport?.connectionState = .connected
                 print("[Relay] Registered provider: \(announce.providerName) (\(announce.providerID.prefix(8))...)")
 
                 // Forward to already-connected clients
@@ -572,8 +711,30 @@ extension MPCRelay: MCSessionDelegate {
         case .ping, .pong:
             break
         default:
-            // Response from provider — forward to the originating client
-            forwardToClient(envelope, from: peerID)
+            // Response from provider — route to correct destination
+            if localTransport != nil {
+                let requestID = extractRequestID(from: envelope)
+                if let requestID, let origin = requestRouting.removeValue(forKey: requestID) {
+                    // Matched by requestID — route to the correct client
+                    switch origin {
+                    case .local:
+                        localTransport?.onMessageReceived?(envelope)
+                        print("[Relay] Routed \(envelope.type) to local client (reqID: \(requestID.prefix(8))...)")
+                    case .remote(let clientPeer):
+                        forwardToClient(envelope, from: peerID)
+                        print("[Relay] Routed \(envelope.type) to remote client (reqID: \(requestID.prefix(8))...)")
+                    }
+                } else if connectedClients.isEmpty {
+                    // Dual mode with no remote clients — everything is local
+                    localTransport?.onMessageReceived?(envelope)
+                } else {
+                    // Unsolicited message (sessionSync) or untracked — forward to remote client
+                    forwardToClient(envelope, from: peerID)
+                }
+            } else {
+                // Relay-only mode
+                forwardToClient(envelope, from: peerID)
+            }
         }
     }
 
