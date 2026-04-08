@@ -76,4 +76,52 @@ final class RelayDisconnectTests: XCTestCase {
         let decoded = try unwrapped.unwrap(as: ErrorResponse.self)
         XCTAssertEqual(decoded.errorCode, .providerUnreachable)
     }
+
+    // MARK: - relayTimeout ErrorResponse
+
+    func testRelayTimeoutError_roundTrips() throws {
+        let error = ErrorResponse(
+            requestID: nil,
+            errorCode: .relayTimeout,
+            errorMessage: "Provider did not respond within 15s"
+        )
+        let envelope = try MessageEnvelope.wrap(type: .errorResponse, senderID: "relay", payload: error)
+        let data = try envelope.serialized()
+        let restored = try MessageEnvelope.deserialize(from: data)
+
+        XCTAssertEqual(restored.type, .errorResponse)
+        let decoded = try restored.unwrap(as: ErrorResponse.self)
+        XCTAssertEqual(decoded.errorCode, .relayTimeout)
+        XCTAssertNil(decoded.requestID, "Relay doesn't know requestID — should be nil")
+        XCTAssertTrue(decoded.errorMessage.contains("15s"))
+    }
+
+    func testRelayEnvelope_wrappingTimeoutError_roundTrips() throws {
+        let error = ErrorResponse(
+            requestID: nil,
+            errorCode: .relayTimeout,
+            errorMessage: "Provider did not respond within 15s"
+        )
+        let innerEnvelope = try MessageEnvelope.wrap(
+            type: .errorResponse,
+            senderID: "relay",
+            payload: error
+        )
+        let relayEnvelope = try RelayEnvelope.wrap(
+            envelope: innerEnvelope,
+            destinationID: "client",
+            originID: "provider-abc"
+        )
+
+        let data = try relayEnvelope.serialized()
+        let restored = try RelayEnvelope.deserialize(from: data)
+
+        XCTAssertEqual(restored.destinationID, "client")
+        XCTAssertEqual(restored.originID, "provider-abc")
+
+        let unwrapped = try restored.unwrapInner()
+        XCTAssertEqual(unwrapped.type, .errorResponse)
+        let decoded = try unwrapped.unwrap(as: ErrorResponse.self)
+        XCTAssertEqual(decoded.errorCode, .relayTimeout)
+    }
 }

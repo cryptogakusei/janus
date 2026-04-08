@@ -247,7 +247,8 @@ final class DirectModeProtocolTests: XCTestCase {
         let allCodes: [ErrorResponse.ErrorCode] = [
             .invalidSession, .expiredQuote, .insufficientCredits,
             .invalidSignature, .sessionExpired, .providerBusy,
-            .sequenceMismatch, .inferenceFailed, .providerUnreachable
+            .sequenceMismatch, .inferenceFailed, .providerUnreachable,
+            .relayTimeout
         ]
 
         for code in allCodes {

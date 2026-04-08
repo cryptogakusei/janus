@@ -46,6 +46,24 @@ class MPCRelay: NSObject, ObservableObject {
     /// Maps provider MPC peer → provider ID (for routing provider responses to clients).
     private var peerToProviderID: [MCPeerID: String] = [:]
 
+    // MARK: - In-flight request tracking
+
+    /// Tracks forwarded requests awaiting a response from the provider.
+    /// Key is originID (client session ID), value is the in-flight request info.
+    private var inFlightRequests: [String: InFlightRequest] = [:]
+
+    /// How long the relay waits for a provider response before sending a timeout error.
+    /// Must be shorter than the client's 20s timeout so the relay error arrives first.
+    private let relayTimeoutInterval: TimeInterval = 15
+
+    private struct InFlightRequest {
+        let clientPeer: MCPeerID
+        let providerID: String
+        let messageType: MessageType
+        let forwardedAt: Date
+        let timeoutTask: Task<Void, Never>
+    }
+
     // MARK: - Init
 
     override init() {
@@ -68,6 +86,7 @@ class MPCRelay: NSObject, ObservableObject {
         providerRoutes.removeAll()
         clientRoutes.removeAll()
         peerToProviderID.removeAll()
+        cancelAllInFlightTimeouts()
 
         // Keep screen awake so MPC sessions survive
         UIApplication.shared.isIdleTimerDisabled = true
@@ -92,6 +111,7 @@ class MPCRelay: NSObject, ObservableObject {
         providerRoutes.removeAll()
         clientRoutes.removeAll()
         peerToProviderID.removeAll()
+        cancelAllInFlightTimeouts()
         print("[Relay] Stopped")
     }
 
@@ -182,6 +202,17 @@ class MPCRelay: NSObject, ObservableObject {
         // Register the sender for response routing
         clientRoutes[relayEnvelope.originID] = clientPeer
 
+        // Peek at inner envelope to track request types that expect a response
+        if let innerEnvelope = try? relayEnvelope.unwrapInner(),
+           innerEnvelope.type == .promptRequest || innerEnvelope.type == .voucherAuthorization {
+            trackInFlightRequest(
+                originID: relayEnvelope.originID,
+                clientPeer: clientPeer,
+                providerID: providerID,
+                messageType: innerEnvelope.type
+            )
+        }
+
         // Unwrap and send bare MessageEnvelope to provider (provider transparency)
         do {
             try session.send(relayEnvelope.innerEnvelope, toPeers: [providerPeer], with: .reliable)
@@ -195,6 +226,18 @@ class MPCRelay: NSObject, ObservableObject {
     /// Forward a message from provider to the originating client.
     /// Provider sends bare MessageEnvelope; relay wraps in RelayEnvelope for client.
     private func forwardToClient(_ envelope: MessageEnvelope, from providerPeer: MCPeerID) {
+        // Clear in-flight tracking for response types
+        if envelope.type == .quoteResponse || envelope.type == .inferenceResponse || envelope.type == .errorResponse || envelope.type == .sessionSync {
+            // Find which client's in-flight request this response satisfies.
+            // The provider doesn't know the originID, so we match by providerID.
+            if let providerID = peerToProviderID[providerPeer] {
+                let matching = inFlightRequests.filter { $0.value.providerID == providerID }
+                for (key, _) in matching {
+                    clearInFlightRequest(originID: key)
+                }
+            }
+        }
+
         // Look up which client this response is for
         let senderID = envelope.senderID
         guard let providerID = peerToProviderID[providerPeer] else {
@@ -267,6 +310,101 @@ class MPCRelay: NSObject, ObservableObject {
         // The clientRoutes maps senderID → clientPeer. We need to find which senderID
         // was targeting this provider. For now, return the most recently registered client.
         return clientRoutes.values.first
+    }
+
+    // MARK: - In-flight request timeout
+
+    /// Track a forwarded request that expects a response from the provider.
+    private func trackInFlightRequest(originID: String, clientPeer: MCPeerID, providerID: String, messageType: MessageType) {
+        // Cancel any existing timeout for this client (shouldn't happen, but be safe)
+        inFlightRequests[originID]?.timeoutTask.cancel()
+
+        let timeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(15_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.handleRelayTimeout(originID: originID)
+        }
+
+        inFlightRequests[originID] = InFlightRequest(
+            clientPeer: clientPeer,
+            providerID: providerID,
+            messageType: messageType,
+            forwardedAt: Date(),
+            timeoutTask: timeoutTask
+        )
+        print("[Relay] Tracking in-flight \(messageType) for \(originID.prefix(8))... (timeout: \(Int(relayTimeoutInterval))s)")
+    }
+
+    /// Clear the in-flight tracker when a response arrives.
+    private func clearInFlightRequest(originID: String) {
+        if let request = inFlightRequests.removeValue(forKey: originID) {
+            request.timeoutTask.cancel()
+            let elapsed = Date().timeIntervalSince(request.forwardedAt)
+            print("[Relay] Cleared in-flight \(request.messageType) for \(originID.prefix(8))... (responded in \(String(format: "%.1f", elapsed))s)")
+        }
+    }
+
+    /// Handle a relay timeout — provider didn't respond in time.
+    private func handleRelayTimeout(originID: String) {
+        guard let request = inFlightRequests.removeValue(forKey: originID) else { return }
+        print("[Relay] Timeout: provider \(request.providerID.prefix(8))... did not respond within \(Int(relayTimeoutInterval))s for \(originID.prefix(8))...")
+
+        sendRelayTimeoutError(to: request.clientPeer, providerID: request.providerID)
+    }
+
+    /// Send a relayTimeout error back to the client.
+    private func sendRelayTimeoutError(to clientPeer: MCPeerID, providerID: String) {
+        guard let session = clientSessions[clientPeer] else { return }
+        let error = ErrorResponse(
+            requestID: nil,
+            errorCode: .relayTimeout,
+            errorMessage: "Provider did not respond within \(Int(relayTimeoutInterval))s"
+        )
+        do {
+            let innerEnvelope = try MessageEnvelope.wrap(
+                type: .errorResponse,
+                senderID: "relay",
+                payload: error
+            )
+            let relayEnvelope = try RelayEnvelope.wrap(
+                envelope: innerEnvelope,
+                destinationID: "client",
+                originID: providerID
+            )
+            let data = try relayEnvelope.serialized()
+            try session.send(data, toPeers: [clientPeer], with: .reliable)
+            print("[Relay] Sent relayTimeout error to \(clientPeer.displayName)")
+        } catch {
+            print("[Relay] Failed to send timeout error: \(error)")
+        }
+    }
+
+    /// Cancel all in-flight timeouts (used during cleanup).
+    private func cancelAllInFlightTimeouts() {
+        for request in inFlightRequests.values {
+            request.timeoutTask.cancel()
+        }
+        inFlightRequests.removeAll()
+    }
+
+    /// Cancel in-flight requests for a specific client (used on client disconnect).
+    private func cancelInFlightRequests(for clientPeer: MCPeerID) {
+        let toRemove = inFlightRequests.filter { $0.value.clientPeer == clientPeer }
+        for (key, request) in toRemove {
+            request.timeoutTask.cancel()
+            inFlightRequests.removeValue(forKey: key)
+        }
+    }
+
+    /// Cancel in-flight requests targeting a specific provider (used on provider disconnect).
+    private func cancelInFlightRequests(forProvider providerID: String) {
+        let toRemove = inFlightRequests.filter { $0.value.providerID == providerID }
+        for (key, request) in toRemove {
+            request.timeoutTask.cancel()
+            inFlightRequests.removeValue(forKey: key)
+            // Also notify the client that their request won't be answered
+            sendProviderUnreachableError(to: request.clientPeer)
+        }
     }
 
     // MARK: - Session creation
@@ -354,6 +492,8 @@ extension MPCRelay: MCSessionDelegate {
             // ServiceAnnounce will arrive via didReceive data
         case .notConnected:
             if let providerID = peerToProviderID[peer] {
+                // Notify clients with in-flight requests that provider is gone
+                cancelInFlightRequests(forProvider: providerID)
                 reachableProviders.removeValue(forKey: providerID)
                 providerRoutes.removeValue(forKey: providerID)
                 peerToProviderID.removeValue(forKey: peer)
@@ -385,8 +525,9 @@ extension MPCRelay: MCSessionDelegate {
             print("[Relay] Client connected: \(peer.displayName) (total: \(connectedClients.count))")
         case .notConnected:
             if let name = connectedClients.removeValue(forKey: peer) {
-                // Clean up routes for this client
+                // Clean up routes and in-flight requests for this client
                 clientRoutes = clientRoutes.filter { $0.value != peer }
+                cancelInFlightRequests(for: peer)
                 clientSessions.removeValue(forKey: peer)
                 print("[Relay] Client disconnected: \(name) (total: \(connectedClients.count))")
             }

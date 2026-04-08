@@ -22,5 +22,6 @@ public struct ErrorResponse: Codable, Sendable {
         case sequenceMismatch = "SEQUENCE_MISMATCH"
         case inferenceFailed = "INFERENCE_FAILED"
         case providerUnreachable = "PROVIDER_UNREACHABLE"
+        case relayTimeout = "RELAY_TIMEOUT"
     }
 }
