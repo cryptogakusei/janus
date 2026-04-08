@@ -1549,6 +1549,7 @@ Full prioritized list of all remaining features across relay, transport, payment
 | 10 | SettlementNotice message | Small | — | Provider → client: "I settled session Y for Z credits." Client currently has no way to know settlement happened. Low priority — settlement is provider-side, client doesn't need to act on it. |
 | 11 | Channel top-up | Small-Medium | — | Add funds to existing channel without opening a new one. Depends on whether TempoStreamChannel contract supports it. Swift side needs a top-up flow in ChannelOpener. |
 | 12 | Multi-channel management UI | Small | — | View/manage channels with multiple providers. Currently one provider, one channel. |
+| 12a | Fix first-query failure after provider switch | Small | — | When switching providers (any mode), the first query can fail with "channel rejected / invalid session" because the query races with `createSession(providerID:)`. Fix: block query submission until new session + Tempo channel are fully initialized, or queue the query and replay after session setup. |
 | 13 | Real token economics / USD pricing | Product decision | — | Dynamic pricing by model load, token count, or USD denomination. Currently fixed 3/5/8 credit tiers. |
 | 14 | Mainnet deployment | Small | — | TempoConfig.mainnet + deploy TempoStreamChannel contract to mainnet. No code changes needed. |
 

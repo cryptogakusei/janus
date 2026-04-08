@@ -95,15 +95,10 @@ class ClientEngine: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Forward provider lists from transport (browser or local transport).
-        // For browser: merge relay and direct providers (mutually exclusive by mode).
+        // Forward relay providers list from transport (browser or local transport)
         if let browser = browserRef {
             browser.$relayProviders
-                .combineLatest(browser.$directProviders)
-                .map { relay, direct in
-                    // Use whichever is active — they're mutually exclusive by connection mode
-                    relay.isEmpty ? Array(direct.values) : Array(relay.values)
-                }
+                .map { Array($0.values) }
                 .assign(to: &$availableProviders)
         } else if let localTransport = transport as? RelayLocalTransport {
             localTransport.$relayProviders
@@ -118,14 +113,10 @@ class ClientEngine: ObservableObject {
         }
     }
 
-    /// Switch to a different available provider (direct or relay).
+    /// Switch to a different provider available through the relay.
     func selectProvider(_ providerID: String) {
         if let browser = browserRef {
-            if browser.connectionMode == .direct {
-                browser.selectDirectProvider(providerID)
-            } else {
-                browser.selectRelayProvider(providerID)
-            }
+            browser.selectRelayProvider(providerID)
         } else if let localTransport = transport as? RelayLocalTransport {
             localTransport.selectProvider(providerID)
         }
