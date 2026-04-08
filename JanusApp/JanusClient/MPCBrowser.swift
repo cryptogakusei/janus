@@ -2,6 +2,9 @@ import Foundation
 import MultipeerConnectivity
 import JanusShared
 import UIKit
+import os.log
+
+private let browserLog = OSLog(subsystem: "com.janus.client", category: "MPCBrowser")
 
 /// Discovers nearby Janus providers via Multipeer Connectivity.
 ///
@@ -49,8 +52,10 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
 
     // Direct provider connection
     nonisolated(unsafe) private let providerBrowser: MCNearbyServiceBrowser
-    nonisolated(unsafe) private var providerSession: MCSession
+    nonisolated(unsafe) private var providerSession: MCSession  // default session for first provider
     private var providerPeerID: MCPeerID?
+    /// Per-provider sessions — one MCSession per direct provider peer (like MPCAdvertiser does per-client).
+    nonisolated(unsafe) private var directProviderSessions: [MCPeerID: MCSession] = [:]
 
     // Relay connection
     nonisolated(unsafe) private let relayBrowser: MCNearbyServiceBrowser
@@ -121,6 +126,8 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
         stopProviderBrowser()
         stopRelayBrowser()
         resetProviderSession()
+        for session in directProviderSessions.values { session.disconnect() }
+        directProviderSessions = [:]
         resetRelaySession()
 
         // Brief delay lets MPC fully clean up cached peer state before re-browsing.
@@ -154,11 +161,13 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
     func send(_ envelope: MessageEnvelope) throws {
         switch connectionMode {
         case .direct:
-            guard let providerPeerID, providerSession.connectedPeers.contains(providerPeerID) else {
+            guard let providerPeerID,
+                  let session = directProviderSessions[providerPeerID],
+                  session.connectedPeers.contains(providerPeerID) else {
                 throw MPCError.notConnected
             }
             let data = try envelope.serialized()
-            try providerSession.send(data, toPeers: [providerPeerID], with: .reliable)
+            try session.send(data, toPeers: [providerPeerID], with: .reliable)
 
         case .relayed:
             guard let relayPeerID, relaySession.connectedPeers.contains(relayPeerID),
@@ -187,6 +196,8 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
         relayInfoTimeoutTask?.cancel()
         relayInfoTimeoutTask = nil
         providerSession.disconnect()
+        for session in directProviderSessions.values { session.disconnect() }
+        directProviderSessions = [:]
         relaySession.disconnect()
         connectedProvider = nil
         relayProviders = [:]
@@ -210,7 +221,9 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
         if connectionState == .connected {
             switch connectionMode {
             case .direct:
-                if let provider = providerPeerID, providerSession.connectedPeers.contains(provider) {
+                if let provider = providerPeerID,
+                   let session = directProviderSessions[provider],
+                   session.connectedPeers.contains(provider) {
                     return // genuinely connected
                 }
             case .relayed:
@@ -228,6 +241,8 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
             directProviders = [:]
             directProviderPeers = [:]
             directPeerProviderIDs = [:]
+            for session in directProviderSessions.values { session.disconnect() }
+            directProviderSessions = [:]
             connectionState = .disconnected
             connectionMode = .disconnected
         }
@@ -236,6 +251,8 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
         stopProviderBrowser()
         stopRelayBrowser()
         resetProviderSession()
+        for session in directProviderSessions.values { session.disconnect() }
+        directProviderSessions = [:]
         resetRelaySession()
         if forceRelayMode {
             startRelayBrowser()
@@ -415,11 +432,12 @@ class MPCBrowser: NSObject, ObservableObject, ProviderTransport {
     }
 
     /// Switch to a different directly-connected provider.
-    /// No disconnect/reconnect needed — MCSession supports multiple peers.
+    /// Each provider has its own MCSession — switching just changes which session is active.
     func selectDirectProvider(_ providerID: String) {
         guard let announce = directProviders[providerID],
               let peer = directProviderPeers[providerID],
-              providerSession.connectedPeers.contains(peer) else { return }
+              let session = directProviderSessions[peer],
+              session.connectedPeers.contains(peer) else { return }
         connectedProvider = announce
         providerPeerID = peer
         print("Switched to direct provider: \(announce.providerName)")
@@ -432,6 +450,7 @@ extension MPCBrowser: MCNearbyServiceBrowserDelegate {
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String: String]?) {
         Task { @MainActor in
             let isRelay = info?["type"] == "relay"
+            os_log("FOUND_PEER=%{public}@ isRelay=%{public}@ state=%{public}@ mode=%{public}@", log: browserLog, type: .default, peerID.displayName, "\(isRelay)", connectionState.rawValue, "\(connectionMode)")
 
             if isRelay {
                 // Only accept relay when not already connected
@@ -445,24 +464,32 @@ extension MPCBrowser: MCNearbyServiceBrowserDelegate {
                 if forceRelayMode {
                     return  // Skip direct providers in force relay mode
                 }
-                // Accept new providers even when already connected (MCSession supports multiple peers)
-                guard connectionState == .disconnected || connectionState == .connectionFailed
-                      || (connectionState == .connected && connectionMode == .direct) else { return }
-                // Skip if this peer is already in our session
-                guard !providerSession.connectedPeers.contains(peerID) else { return }
+                // Accept providers unless we're already connected via relay
+                if case .relayed = connectionMode { return }
+                // Skip if we already have a session for this peer
+                guard directProviderSessions[peerID] == nil else {
+                    print("Skipping \(peerID.displayName) — already has a session")
+                    return
+                }
                 if connectionState == .disconnected || connectionState == .connectionFailed {
                     connectionState = .connecting
                     startConnectionTimeout()
                 }
-                browser.invitePeer(peerID, to: providerSession, withContext: nil, timeout: 15)
-                print("Found provider: \(peerID.displayName), inviting...")
+                // Create a dedicated session per provider (shared sessions are unreliable over AWDL)
+                let session = MCSession(peer: self.peerID, securityIdentity: nil, encryptionPreference: .required)
+                session.delegate = self
+                directProviderSessions[peerID] = session
+                browser.invitePeer(peerID, to: session, withContext: nil, timeout: 15)
+                os_log("INVITE_PROVIDER=%{public}@ sessions=%d", log: browserLog, type: .default, peerID.displayName, directProviderSessions.count)
             }
         }
     }
 
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
         Task { @MainActor in
-            // Remove from direct provider maps if this was a known direct provider
+            // Remove from direct provider maps and sessions if this was a known direct provider
+            directProviderSessions[peerID]?.disconnect()
+            directProviderSessions.removeValue(forKey: peerID)
             if let providerID = directPeerProviderIDs[peerID] {
                 directProviders.removeValue(forKey: providerID)
                 directProviderPeers.removeValue(forKey: providerID)
@@ -501,10 +528,13 @@ extension MPCBrowser: MCSessionDelegate {
     nonisolated func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
         Task { @MainActor in
             // Determine if this is a provider session or relay session event
-            if session === providerSession {
-                handleProviderSessionChange(peer: peerID, state: state)
-            } else if session === relaySession {
+            if session === relaySession {
                 handleRelaySessionChange(peer: peerID, state: state)
+            } else if directProviderSessions.values.contains(where: { $0 === session }) {
+                handleProviderSessionChange(peer: peerID, state: state)
+            } else if session === providerSession {
+                // Legacy fallback for default session
+                handleProviderSessionChange(peer: peerID, state: state)
             }
         }
     }
@@ -531,10 +561,11 @@ extension MPCBrowser: MCSessionDelegate {
                 relayRouteID = nil
                 relayProviders = [:]
             }
-            print("Direct connection to provider: \(peer.displayName) (\(providerSession.connectedPeers.count) peers in session)")
+            os_log("DIRECT_CONNECTED=%{public}@ totalSessions=%d", log: browserLog, type: .default, peer.displayName, directProviderSessions.count)
         case .notConnected:
             if connectionMode == .direct {
-                // Remove from direct provider maps
+                // Remove from direct provider maps and sessions
+                directProviderSessions.removeValue(forKey: peer)
                 if let providerID = directPeerProviderIDs[peer] {
                     directProviders.removeValue(forKey: providerID)
                     directProviderPeers.removeValue(forKey: providerID)
@@ -602,10 +633,11 @@ extension MPCBrowser: MCSessionDelegate {
 
     nonisolated func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
         Task { @MainActor in
-            if session === providerSession {
-                handleDirectData(data, from: peerID)
-            } else if session === relaySession {
+            if session === relaySession {
                 handleRelayData(data, from: peerID)
+            } else {
+                // Any provider session (per-provider or legacy default)
+                handleDirectData(data, from: peerID)
             }
         }
     }
@@ -626,7 +658,7 @@ extension MPCBrowser: MCSessionDelegate {
                     connectedProvider = announce
                     providerPeerID = peerID
                 }
-                print("Direct provider announced: \(announce.providerName) (\(directProviders.count) total)")
+                os_log("DIRECT_ANNOUNCE=%{public}@ total=%d", log: browserLog, type: .default, announce.providerName, directProviders.count)
             }
         case .ping, .pong:
             break
