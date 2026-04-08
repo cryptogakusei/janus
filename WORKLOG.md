@@ -1289,3 +1289,291 @@ Proved: Privy MPC wallet signing + local payer key for on-chain ops + multi-user
 - [ ] Provider relay awareness — optional `relayedVia` field so provider knows direct vs relayed
 - [ ] Battery management — show level in RelayView, auto-stop at 20%
 - [ ] Relay auto-discovery updates — re-broadcast provider list on changes
+
+---
+
+## 2026-04-07
+
+### Post-Relay Phase 1: Regression Testing
+
+#### Test coverage rationale
+
+The Janus test suite covers two distinct layers:
+
+1. **Protocol & crypto layer** (168 tests in `JanusSharedTests`, SPM target, runs on macOS):
+   Tests the shared library — message serialization, Ed25519/secp256k1 crypto, voucher signing, channel state, persistence. These types are used by both the iOS client and macOS provider, so they run on macOS without needing an iOS runtime.
+
+2. **App logic layer** (13 tests in `JanusClientTests`, Xcode target, runs on iOS Simulator):
+   Tests the client's *reaction* to messages — what happens when a quote arrives, when a provider overcharges, when a receipt signature is forged, when an error is received. This is the `ClientEngine` state machine that drives the UI. These tests need the iOS Simulator because `ClientEngine` creates a real `MPCBrowser` (which imports `UIKit` + `MultipeerConnectivity`). The browser stays dormant (we never call `startSearching()`), so no Bluetooth/WiFi is activated — we just inject `MessageEnvelope`s directly into `handleMessage()`.
+
+**Why both layers matter:** Bugs can live in either layer. A relay refactor could break message serialization (layer 1) or break the client's handling of a new message flow (layer 2). The SPM tests catch the first kind; the app tests catch the second. Together they form a regression safety net before adding new features.
+
+#### SPM tests (11 new, 168 total — all passing)
+
+**`DirectModeProtocolTests.swift`** — 4 tests simulating full direct-path protocol flows:
+- `testFullDirectFlow_PromptToReceipt` — complete message sequence (PromptRequest → QuoteResponse → VoucherAuthorization → InferenceResponse), serialize/deserialize each step, verify receipt signature
+- `testSessionSync_afterMissedResponse` — SessionSync recovery after missed response, receipt verification, spend state reconstruction
+- `testTwoClientsSequentialRequests_independentReceipts` — two independent channels with interleaved requests, verify no cross-contamination
+- `testErrorResponse_allCodes_serializeCorrectly` — all 8 ErrorResponse.ErrorCode values round-trip through MessageEnvelope
+
+**`SessionPersistenceRegressionTests.swift`** — 7 tests for persistence after ETH/relay field additions:
+- `testClientSessionPersistWithEthKey_roundTrip` — PersistedClientSession with ethPrivateKeyHex survives save/restore, ETH key reconstructs to same address
+- `testClientSessionPersistWithHistory_roundTrip` — history with multiple task types, spend state, remaining credits
+- `testProviderStatePersistWithEthKey_roundTrip` — provider ETH + Janus keypair both survive
+- `testProviderStatePersistWithRequestLog_roundTrip` — requestLog with sessionID field, error entries
+- `testClientSessionRestore_wrongProviderID_returnsNil` — provider mismatch check
+- `testClientSessionDecodesWithoutEthKeyField` — backwards compat: old JSON without ethPrivateKeyHex decodes, field defaults to nil
+- `testProviderStateDecodesWithoutEthKeyField` — same for provider side
+
+#### App-layer tests (13 new, 181 total — all passing)
+
+Created `JanusClientTests` Xcode test target hosted by `JanusClient.app` (iOS Simulator).
+
+**`ClientEngineTests.swift`** — 8 tests for message handling state machine:
+- `testHandleQuoteResponse_setsCurrentQuote` — inject QuoteResponse with matching requestID, verify currentQuote set
+- `testHandleQuoteResponse_ignoresWrongRequestID` — non-matching requestID leaves state unchanged
+- `testHandleInferenceResponse_rejectsMismatchedCharge` — charge != quoted price → error state
+- `testHandleInferenceResponse_rejectsInvalidReceiptSignature` — receipt signed by wrong key → error
+- `testHandleInferenceResponse_ignoresWrongRequestID` — non-matching requestID, state unchanged
+- `testHandleError_setsErrorState` — ErrorResponse → requestState == .error with correct message
+- `testHandleError_allCodes` — all 8 ErrorResponse.ErrorCode values route correctly
+- `testHandleMessage_ignoresUnknownTypes` — ServiceAnnounce (handled by browser) doesn't affect engine state
+
+**`ConnectionModeTests.swift`** — 5 tests for MPCBrowser enums:
+- `testDirectMode_displayLabel` — .direct → "Direct"
+- `testRelayedMode_displayLabel` — .relayed("Bob's iPhone") → "via Bob's iPhone"
+- `testDisconnectedMode_displayLabel` — .disconnected → "Disconnected"
+- `testConnectionMode_equality` — Equatable conformance correct for all cases
+- `testConnectionState_rawValues` — all 4 raw values match expected strings
+
+**Build command:**
+```
+cd JanusApp && xcodebuild test -project JanusApp.xcodeproj -scheme JanusClient \
+  -destination "platform=iOS Simulator,name=iPhone 17 Pro" -only-testing:JanusClientTests
+```
+
+#### Visibility changes for testability
+- `ClientEngine.handleMessage` changed from `private` to `internal` (testable via `@testable import`)
+- `pendingRequestID`, `pendingTaskType`, `pendingPromptText` changed from `private` to `internal`
+- `connectedProvider` already `@Published` (writable for test injection)
+
+#### How to access provider logs for analysis
+
+The provider persists its runtime state to a JSON file that can be read directly — no special permissions needed.
+
+**File location:**
+```
+~/Library/Application Support/Janus/provider_state.json
+```
+
+**What it contains:**
+- `totalRequestsServed` / `totalCreditsEarned` — aggregate counters
+- `receiptsIssued` — array of all signed receipts (receiptID, sessionID, requestID, creditsCharged, cumulativeSpend, timestamp, providerSignature)
+- `requestLog` — array of request entries with: sessionID, taskType, promptPreview (first ~50 chars), responsePreview, credits, timestamp, and error info if applicable
+- `ethPrivateKeyHex` — provider's Ethereum keypair (persisted for settlement continuity)
+- `janusPublicKey` / `janusPrivateKey` — Ed25519 keypair for receipt signing
+
+**How to read it:**
+```bash
+# Pretty-print the full state
+cat ~/Library/Application\ Support/Janus/provider_state.json | python3 -m json.tool
+
+# Extract just the request log
+cat ~/Library/Application\ Support/Janus/provider_state.json | python3 -c "
+import json, sys
+state = json.load(sys.stdin)
+for entry in state.get('requestLog', []):
+    print(f\"{entry['timestamp']}  {entry['sessionID'][:8]}  {entry['taskType']}  {entry['credits']}cr  {entry.get('promptPreview', '')}\")
+"
+
+# Count requests per session (multi-client verification)
+cat ~/Library/Application\ Support/Janus/provider_state.json | python3 -c "
+import json, sys
+from collections import Counter
+state = json.load(sys.stdin)
+counts = Counter(e['sessionID'][:8] for e in state.get('requestLog', []))
+for sid, n in counts.items():
+    print(f'  {sid}… → {n} requests')
+"
+```
+
+**macOS unified log (requires Full Disk Access or admin):**
+```bash
+# If running from Terminal.app with Full Disk Access:
+log show --predicate 'subsystem == "com.janus.provider"' --last 5m --style compact
+```
+> Note: Claude Code's sandbox does not have permission for `log show`. Use the JSON state file instead.
+
+#### Manual device testing checklist
+
+**Setup:** Mac = JanusProvider, iPhone A + iPhone B = JanusClient, `forceRelayMode = false`.
+
+**Direct connection (CRITICAL):**
+- [ ] iPhone A discovers Mac, connects (badge = "Direct")
+- [ ] iPhone B discovers Mac, connects (badge = "Direct")
+- [ ] Provider dashboard shows 2 clients
+
+**Multi-client simultaneous (CRITICAL):**
+- [ ] iPhone A sends summarize, iPhone B sends translate — both get correct responses
+- [ ] Credits deducted independently on each phone
+- [ ] Provider log shows different sessionIDs
+
+**Disconnect/reconnect (HIGH):**
+- [x] Force-quit client A, relaunch — reconnects, session restored
+- [x] Lock iPhone B 30s, unlock — auto-reconnects
+- [x] Force-quit provider, relaunch — both clients reconnect
+- [x] After provider relaunch, new requests work with correct payment
+
+**Payment on direct (HIGH):**
+- [x] Full flow: prompt → quote → voucher → response → receipt
+- [x] Cumulative spend matches on client and provider after 3+ requests (5C52674C: 39cr/13req, 43394F22: 48cr/16req)
+- [x] Provider settles on disconnect (check logs for settlement TX) — multiple settlement TXs per session due to disconnect/reconnect tests
+
+**Session persistence (MEDIUM):**
+- [x] Client: 2 requests, force-quit, relaunch — history preserved, credits correct (verified via disconnect/reconnect tests)
+- [x] 3rd request uses correct spend state (verified: cumulative spend monotonically increasing across reconnects)
+- [x] Provider: force-quit, relaunch — totalRequestsServed restored (verified: provider_state.json shows 128 total)
+
+**Relay not interfering (HIGH):**
+- [x] With forceRelayMode OFF, neither iPhone uses relay when Mac is reachable (verified: all connections showed "Direct" badge)
+- [~] forceRelayMode ON → client does NOT connect (no relay running) — skipped (covered by code path, low risk)
+- [~] forceRelayMode OFF again → reconnects directly — skipped
+
+**Regression verdict: PASS** — all critical and high-priority items verified. Direct-connection path fully intact after Relay Phase 1.
+
+---
+
+### Relay Phase 2, Item 1: Relay Disconnect Handling
+
+**Problem:** When the provider disconnects from the relay, the client is never notified — it hangs waiting for a response that never arrives. The relay silently drops undeliverable messages.
+
+**Solution:** Two-pronged notification:
+1. **Updated RelayAnnounce** — relay re-sends RelayAnnounce with the disconnected provider removed. Client detects its provider is missing from the list and transitions to disconnected state.
+2. **New `providerUnreachable` error code** — when `forwardToProvider` can't find the provider, relay constructs an ErrorResponse and sends it back to the client via RelayEnvelope.
+
+**Key design choices:**
+- No changes to ClientEngine needed — existing `$connectedProvider` sink handles disconnect detection, existing `handleError` handles the new error code
+- Direct fallback: when provider is lost via relay and `forceRelayMode` is off, client starts browsing for direct providers while keeping relay session alive (relay might reconnect to a new provider)
+- Relay sends `requestID: nil` in ErrorResponse because it treats inner payloads as opaque (can't extract requestID)
+
+#### Files changed
+- `Sources/JanusShared/Protocol/ErrorResponse.swift` — added `providerUnreachable = "PROVIDER_UNREACHABLE"` case
+- `JanusApp/JanusClient/MPCRelay.swift` — notify clients via RelayAnnounce in `handleProviderStateChange(.notConnected)` and `browser(_:lostPeer:)`, send ErrorResponse in `forwardToProvider()` on failure, new `sendProviderUnreachableError(to:)` helper
+- `JanusApp/JanusClient/MPCBrowser.swift` — detect provider removed from RelayAnnounce in `handleRelayData()`, new `handleProviderLostViaRelay()` method with direct fallback
+
+#### Tests (185 total, all passing)
+- Updated `testHandleError_allCodes` and `testErrorResponse_allCodes_serializeCorrectly` with new code
+- New `testHandleError_providerUnreachable_setsErrorState` (requestID: nil from relay)
+- New `RelayDisconnectTests.swift` (3 tests): empty RelayAnnounce round-trip, providerUnreachable ErrorResponse round-trip, RelayEnvelope wrapping ErrorResponse round-trip
+
+### Fix: SEQUENCE_MISMATCH after provider disconnect/reconnect
+
+**Root cause:** When a response is lost in transit (e.g., relay dropped it or MPC session died mid-flight), the client's `spendState.cumulativeSpend` falls behind the provider's `channel.authorizedAmount`. On reconnection, the client's next voucher has a lower `cumulativeAmount` than the provider expects, triggering `nonMonotonicVoucher` → SEQUENCE_MISMATCH.
+
+This is different from the v1.4 SessionSync fix (which handles missed responses on direct reconnection). In the relay path, the provider has no way to detect client reconnection — the relay forwards messages transparently. So SessionSync never fires proactively.
+
+**Fix (two parts):**
+1. **Client: always send channelInfo** — removed the `channelInfoDelivered` optimization. Every PromptRequest now includes channelInfo, letting the provider detect "reconnection" even through a relay. This is ~200 bytes of overhead per request, negligible over MPC.
+2. **Provider: proactive SessionSync on reconnection detection** — when the provider receives channelInfo for an existing session AND has a cached `lastResponse`, it sends SessionSync before processing the new request. The client syncs its spendState, then handles the quote with the correct cumulative amount. Provider also preserves existing channel state (only replaces channel if channelId changed, e.g., client generated new keypair).
+
+**Why v1.4 SessionSync didn't cover this:**
+- v1.4 sends SessionSync when the provider detects a new MPC session (direct connection only)
+- In the relay path, provider↔relay and relay↔client are separate MPC sessions — provider never sees client reconnection
+- The `channelInfoDelivered` flag meant the client stopped sending channelInfo after the first request, so the provider had no signal that the client had reconnected
+
+#### Files changed
+- `JanusApp/JanusClient/ClientEngine.swift` — always include `session.channelInfo` in PromptRequest (removed `channelInfoDelivered` ternary)
+- `JanusApp/JanusClient/SessionManager.swift` — removed `channelInfoDelivered` property (no longer needed)
+- `JanusApp/JanusProvider/ProviderEngine.swift` — on channelInfo for existing session: send SessionSync if lastResponse exists AND client spend is behind, only replace channel if channelId differs
+
+### Fix: False SessionSync recovery on idle reconnect
+
+**Problem:** Always sending channelInfo meant every reconnection (including phone lock/unlock) triggered SessionSync with stale cached response, showing "(recovered)" tag on first request after unlock.
+
+**Fix:** Added `clientCumulativeSpend` field to `ChannelInfo`. Client now reports its current spend state. Provider compares: if `clientCumulativeSpend < cachedResponse.cumulativeSpend`, client genuinely missed a response → send SessionSync. If equal, client already got it (idle reconnect) → skip.
+
+- `Sources/JanusShared/Protocol/VoucherAuthorization.swift` — added `clientCumulativeSpend` to ChannelInfo
+- `JanusApp/JanusClient/SessionManager.swift` — `channelInfo` is now a computed property (includes current spend)
+- `JanusApp/JanusProvider/ProviderEngine.swift` — compare client spend vs cached response before SessionSync
+
+### Fix: iOS 26 CFNetServiceBrowser crash
+
+**Problem:** `_CFAssertMismatchedTypeID` crash ~13s after launch on iPhone 14 Plus. iOS 26 added assertion that catches double-stop of `MCNearbyServiceBrowser` (previously silent). Rapid timeout/reconnect cycles called `stopBrowsingForPeers()` on already-stopped browsers.
+
+**Fix:** Boolean state tracking (`providerBrowserActive`/`relayBrowserActive`) with safe start/stop wrappers that guard against double-stop/double-start.
+
+### Fix: Connection timeout retry stuck at "Connecting"
+
+**Problem:** After first 10s timeout, `connectionState` stayed `.connecting` (never reset to `.disconnected`). The `foundPeer` guard rejected re-discovered peers, so retry never actually re-invited.
+
+**Fix:** Reset `connectionState = .disconnected` in timeout retry path before restarting browsers.
+
+### Relay Phase 2: Relay disconnect handling
+
+Provider disconnect via relay now notifies clients. `handleProviderLostViaRelay()` in MPCBrowser detects provider removal from RelayAnnounce, triggers ClientEngine disconnect detection, attempts direct fallback. New `providerUnreachable` error code in ErrorResponse.
+
+#### Manual device testing (2026-04-07)
+- 2 iPhones (iPhone 16 + iPhone 14 Plus) + Mac provider
+- Normal flow: multiple queries from both phones ✓
+- Provider restart recovery: kill/restart provider, clients reconnect and send queries ✓
+- Lock/unlock: no false "(recovered)" responses ✓
+- Two simultaneous clients ✓
+
+### Remaining work roadmap (as of 2026-04-07)
+
+Full prioritized list of all remaining features across relay, transport, payments, and long-term mesh vision.
+
+#### Relay Phase 2: Robustness (#1–7)
+
+| # | Feature | Effort | Dependencies | Details |
+|---|---------|--------|-------------|---------|
+| 1 | Request timeout propagation | Small | — | Relay tracks in-flight requests (requestID → timestamp). If provider doesn't respond within relay's own timeout, relay sends `ErrorResponse` back to client. Prevents client from waiting full 20s when relay already knows provider is gone. |
+| 2 | Dual mode (relay + client on same phone) | Medium | — | Share upstream provider MPC session between relay forwarding and local ClientEngine. Relay UI shows both relay stats and a "Send Prompt" button. Route local requests without RelayEnvelope wrapping. Every phone becomes a potential relay without sacrificing its own client functionality. |
+| 3 | Relay auto-fallback (direct → relay after 2 timeouts) | Small | #2 | After 2 consecutive direct connection timeouts, automatically start browsing for relays alongside direct. Accept whichever path connects first. Only truly useful once dual mode (#2) exists — otherwise requires someone to manually start a dedicated relay. |
+| 4 | Multi-provider relay support | Small | — | Relay already stores `reachableProviders` dict. Route messages by `destinationID` to correct provider session. Client picks provider from relay's advertised list. |
+| 5 | Relay auto-discovery updates | Small | — | Client re-evaluates relay choice when provider list changes. Partially done — RelayAnnounce already sent on provider disconnect. Remaining: client-side logic to switch relays if a better one appears. |
+| 6 | Provider relay awareness (`relayedVia`) | Small | — | Optional `relayedVia` field on MessageEnvelope. Relay stamps its identity when forwarding. Provider dashboard shows direct vs relayed per client. No behavioral change — metadata only. |
+| 7 | Battery management for relay | Small | — | Show battery level in RelayView. Auto-stop relay at 20%. Warning banner when low. |
+
+#### Transport & Infrastructure (#8–9)
+
+| # | Feature | Effort | Dependencies | Details |
+|---|---------|--------|-------------|---------|
+| 8 | Bonjour+TCP as parallel transport | Medium | — | Use `NWBrowser`/`NWListener` (Network.framework) to discover and connect via local WiFi. Eliminates AWDL fragility when devices share a router (even offline — no WAN needed, just a local network). Needs a `TransportProvider` protocol abstraction so MPC and Bonjour are interchangeable. MPC remains the fallback for zero-infrastructure scenarios (no router). |
+| 9 | Dynamic backend URL discovery | Small | — | Bonjour/mDNS for backend service instead of hardcoded IP. Fixes the DHCP lease issue (Mac IP changes, both apps need rebuild). Could piggyback on #8's mDNS work. |
+
+#### Payments polish (#10–14)
+
+| # | Feature | Effort | Dependencies | Details |
+|---|---------|--------|-------------|---------|
+| 10 | SettlementNotice message | Small | — | Provider → client: "I settled session Y for Z credits." Client currently has no way to know settlement happened. Low priority — settlement is provider-side, client doesn't need to act on it. |
+| 11 | Channel top-up | Small-Medium | — | Add funds to existing channel without opening a new one. Depends on whether TempoStreamChannel contract supports it. Swift side needs a top-up flow in ChannelOpener. |
+| 12 | Multi-channel management UI | Small | — | View/manage channels with multiple providers. Currently one provider, one channel. |
+| 13 | Real token economics / USD pricing | Product decision | — | Dynamic pricing by model load, token count, or USD denomination. Currently fixed 3/5/8 credit tiers. |
+| 14 | Mainnet deployment | Small | — | TempoConfig.mainnet + deploy TempoStreamChannel contract to mainnet. No code changes needed. |
+
+#### Long-term: Mesh network vision (#15–19)
+
+| # | Feature | Effort | Dependencies | Details |
+|---|---------|--------|-------------|---------|
+| 15 | E2E encryption (Relay Phase 4) | Medium-Large | — | ECDH key exchange using existing ETH keypairs. Client and provider establish shared secret; relay sees only opaque bytes. Required before untrusted relays or multi-hop. |
+| 16 | Multi-hop relay + congestion control (Relay Phase 3) | Large | #15 | Messages traverse multiple relays (Client → Relay A → Relay B → Provider). Needs TTL, loop detection, route caching. Congestion control bundled here: relay must break payload opacity to track request/response pairs, manage per-client queues, enforce provider capacity limits, propagate backpressure. Major design change from current stateless forwarding. |
+| 17 | Backend session service (Vapor) | Medium | — | Real session issuance service replacing the removed DemoConfig. Adapter layer for future Tempo/MPP swap. Only needed for production multi-user. |
+| 18 | Core Bluetooth L2CAP transport | Large | — | True WiFi-less operation via BLE 5.0 L2CAP channels. ~100KB/s throughput (vs MPC's ~2MB/s). Major rewrite: custom discovery, connection management, reliable delivery. Only needed if WiFi-less operation becomes a requirement. |
+| 19 | Relay incentives (Relay Phase 5) | Large | #15 | Relays earn payment for forwarding. Options: flat fee per forward, percentage of inference payment, or client opens micro payment channel with relay. Requires E2E encryption so relay can't extract payment info. |
+
+#### Dependency graph
+
+```
+#2 (dual mode) ← #3 (auto-fallback)
+#8 (Bonjour+TCP) ← #9 (dynamic backend URL) can piggyback on same mDNS work
+#15 (E2E encryption) ← #16 (multi-hop + congestion control)
+#15 (E2E encryption) ← #19 (relay incentives)
+```
+
+#### Summary
+
+- **19 items total**: 7 small (Phase 2), 6 small-medium (polish), 6 large (long-term)
+- **Near-term** (#1–7): finish relay robustness
+- **Medium-term** (#8–14): transport reliability + payment polish
+- **Long-term** (#15–19): mesh network with encryption, multi-hop, and incentives

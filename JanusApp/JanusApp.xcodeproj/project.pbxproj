@@ -36,6 +36,12 @@
 		C300000003 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = D200000001 /* MLXLLM */; };
 		C300000004 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = D200000002 /* MLXLMCommon */; };
 		C300000005 /* Privy in Frameworks */ = {isa = PBXBuildFile; productRef = D300000001 /* Privy */; };
+
+		/* JanusClientTests files */
+		C400000001 /* ClientEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000001 /* ClientEngineTests.swift */; };
+		C400000002 /* ConnectionModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000002 /* ConnectionModeTests.swift */; };
+		C400000003 /* RelayDisconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000003 /* RelayDisconnectTests.swift */; };
+		C300000006 /* JanusShared in Frameworks */ = {isa = PBXBuildFile; productRef = D100000003 /* JanusShared */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -62,9 +68,15 @@
 		A200000006 /* MLXRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXRunner.swift; sourceTree = "<group>"; };
 		A200000007 /* PromptTemplates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptTemplates.swift; sourceTree = "<group>"; };
 
+		/* JanusClientTests source files */
+		A300000001 /* ClientEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClientEngineTests.swift; sourceTree = "<group>"; };
+		A300000002 /* ConnectionModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionModeTests.swift; sourceTree = "<group>"; };
+		A300000003 /* RelayDisconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayDisconnectTests.swift; sourceTree = "<group>"; };
+
 		/* Products */
 		B100000001 /* JanusClient.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JanusClient.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B200000001 /* JanusProvider.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JanusProvider.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B300000001 /* JanusClientTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = JanusClientTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -87,6 +99,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F300000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C300000006 /* JanusShared in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -95,6 +115,7 @@
 			children = (
 				E100000000 /* JanusClient */,
 				E200000000 /* JanusProvider */,
+				E400000000 /* JanusClientTests */,
 				E300000000 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -137,8 +158,19 @@
 			children = (
 				B100000001 /* JanusClient.app */,
 				B200000001 /* JanusProvider.app */,
+				B300000001 /* JanusClientTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		E400000000 /* JanusClientTests */ = {
+			isa = PBXGroup;
+			children = (
+				A300000001 /* ClientEngineTests.swift */,
+				A300000002 /* ConnectionModeTests.swift */,
+				A300000003 /* RelayDisconnectTests.swift */,
+			);
+			path = JanusClientTests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -185,7 +217,45 @@
 			productReference = B200000001 /* JanusProvider.app */;
 			productType = "com.apple.product-type.application";
 		};
+		T300000001 /* JanusClientTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L300000001 /* Build configuration list for PBXNativeTarget "JanusClientTests" */;
+			buildPhases = (
+				S300000001 /* Sources */,
+				F300000001 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				TD30000001 /* PBXTargetDependency */,
+			);
+			name = JanusClientTests;
+			packageProductDependencies = (
+				D100000003 /* JanusShared */,
+			);
+			productName = JanusClientTests;
+			productReference = B300000001 /* JanusClientTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
+
+/* Begin PBXContainerItemProxy section */
+		CIP3000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = P000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = T100000001;
+			remoteInfo = JanusClient;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		TD30000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = T100000001 /* JanusClient */;
+			targetProxy = CIP3000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXProject section */
 		P000000001 /* Project object */ = {
@@ -214,6 +284,7 @@
 			targets = (
 				T100000001 /* JanusClient */,
 				T200000001 /* JanusProvider */,
+				T300000001 /* JanusClientTests */,
 			);
 		};
 /* End PBXProject section */
@@ -247,6 +318,16 @@
 				C200000004 /* ProviderEngine.swift in Sources */,
 				C200000005 /* MLXRunner.swift in Sources */,
 				C200000006 /* PromptTemplates.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		S300000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C400000001 /* ClientEngineTests.swift in Sources */,
+				C400000002 /* ConnectionModeTests.swift in Sources */,
+				C400000003 /* RelayDisconnectTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -400,6 +481,56 @@
 			};
 			name = Release;
 		};
+		X300000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2GKGGY6HZ8;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.janus.client.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/JanusClient.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/JanusClient";
+			};
+			name = Debug;
+		};
+		X300000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2GKGGY6HZ8;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.janus.client.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/JanusClient.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/JanusClient";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -426,6 +557,15 @@
 			buildConfigurations = (
 				X200000001 /* Debug */,
 				X200000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		L300000001 /* Build configuration list for PBXNativeTarget "JanusClientTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				X300000001 /* Debug */,
+				X300000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
@@ -470,6 +610,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = R000000001 /* XCLocalSwiftPackageReference ".." */;
 			productName = MLXLMCommon;
+		};
+		D100000003 /* JanusShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = R000000001 /* XCLocalSwiftPackageReference ".." */;
+			productName = JanusShared;
 		};
 		D300000001 /* Privy */ = {
 			isa = XCSwiftPackageProductDependency;

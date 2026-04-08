@@ -62,6 +62,11 @@ class MPCBrowser: NSObject, ObservableObject {
     /// Callback for received messages.
     var onMessageReceived: ((MessageEnvelope) -> Void)?
 
+    /// Track whether each browser is actively browsing to prevent double-stop crashes.
+    /// iOS 26's CFNetServiceBrowser asserts on stop if the run loop source was already invalidated.
+    private var providerBrowserActive = false
+    private var relayBrowserActive = false
+
     /// Whether auto-reconnect is active (disabled on manual disconnect).
     private var autoReconnect = false
     private var reconnectTask: Task<Void, Never>?
@@ -109,8 +114,8 @@ class MPCBrowser: NSObject, ObservableObject {
         relayRouteID = nil
         relayInfoTimeoutTask?.cancel()
         // Stop and fully tear down before restarting
-        providerBrowser.stopBrowsingForPeers()
-        relayBrowser.stopBrowsingForPeers()
+        stopProviderBrowser()
+        stopRelayBrowser()
         resetProviderSession()
         resetRelaySession()
 
@@ -120,11 +125,11 @@ class MPCBrowser: NSObject, ObservableObject {
             try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
             guard isSearching else { return }
             if forceRelayMode {
-                relayBrowser.startBrowsingForPeers()
+                startRelayBrowser()
                 print("Searching for relays only (force relay mode)...")
             } else {
-                providerBrowser.startBrowsingForPeers()
-                relayBrowser.startBrowsingForPeers()
+                startProviderBrowser()
+                startRelayBrowser()
                 print("Searching for providers and relays...")
             }
         }
@@ -137,8 +142,8 @@ class MPCBrowser: NSObject, ObservableObject {
         reconnectTask = nil
         relayInfoTimeoutTask?.cancel()
         relayInfoTimeoutTask = nil
-        providerBrowser.stopBrowsingForPeers()
-        relayBrowser.stopBrowsingForPeers()
+        stopProviderBrowser()
+        stopRelayBrowser()
     }
 
     /// Send a message envelope to the connected provider (direct or via relay).
@@ -217,16 +222,33 @@ class MPCBrowser: NSObject, ObservableObject {
         }
 
         print("Foreground re-entry — restarting MPC browsing...")
-        providerBrowser.stopBrowsingForPeers()
-        relayBrowser.stopBrowsingForPeers()
+        stopProviderBrowser()
+        stopRelayBrowser()
         resetProviderSession()
         resetRelaySession()
         if forceRelayMode {
-            relayBrowser.startBrowsingForPeers()
+            startRelayBrowser()
         } else {
-            providerBrowser.startBrowsingForPeers()
-            relayBrowser.startBrowsingForPeers()
+            startProviderBrowser()
+            startRelayBrowser()
         }
+    }
+
+    // MARK: - Provider lost via relay
+
+    /// Handle the case where the relay reports our provider is no longer reachable.
+    private func handleProviderLostViaRelay() {
+        connectedProvider = nil
+        relayProviderID = nil
+        relayRouteID = nil
+        connectionState = .disconnected
+        connectionMode = .disconnected
+
+        if !forceRelayMode {
+            print("Attempting direct connection as fallback...")
+            startProviderBrowser()
+        }
+        scheduleReconnect()
     }
 
     // MARK: - Auto-reconnect
@@ -242,10 +264,10 @@ class MPCBrowser: NSObject, ObservableObject {
             resetProviderSession()
             resetRelaySession()
             if forceRelayMode {
-                relayBrowser.startBrowsingForPeers()
+                startRelayBrowser()
             } else {
-                providerBrowser.startBrowsingForPeers()
-                relayBrowser.startBrowsingForPeers()
+                startProviderBrowser()
+                startRelayBrowser()
             }
         }
     }
@@ -260,19 +282,22 @@ class MPCBrowser: NSObject, ObservableObject {
             if consecutiveTimeouts >= maxTimeoutsBeforeWarning {
                 print("Connection failed after \(consecutiveTimeouts) attempts — WiFi likely off")
                 connectionState = .connectionFailed
-                providerBrowser.stopBrowsingForPeers()
-                relayBrowser.stopBrowsingForPeers()
+                stopProviderBrowser()
+                stopRelayBrowser()
             } else {
                 print("Connection timeout (\(consecutiveTimeouts)/\(maxTimeoutsBeforeWarning)) — retrying...")
-                providerBrowser.stopBrowsingForPeers()
-                relayBrowser.stopBrowsingForPeers()
+                connectionState = .disconnected
+                connectionMode = .disconnected
+                providerPeerID = nil
+                stopProviderBrowser()
+                stopRelayBrowser()
                 resetProviderSession()
                 resetRelaySession()
                 if forceRelayMode {
-                    relayBrowser.startBrowsingForPeers()
+                    startRelayBrowser()
                 } else {
-                    providerBrowser.startBrowsingForPeers()
-                    relayBrowser.startBrowsingForPeers()
+                    startProviderBrowser()
+                    startRelayBrowser()
                 }
             }
         }
@@ -293,12 +318,38 @@ class MPCBrowser: NSObject, ObservableObject {
             connectionMode = .disconnected
             resetRelaySession()
             if forceRelayMode {
-                relayBrowser.startBrowsingForPeers()
+                startRelayBrowser()
             } else {
-                providerBrowser.startBrowsingForPeers()
-                relayBrowser.startBrowsingForPeers()
+                startProviderBrowser()
+                startRelayBrowser()
             }
         }
+    }
+
+    // MARK: - Safe browser start/stop
+
+    private func stopProviderBrowser() {
+        guard providerBrowserActive else { return }
+        providerBrowserActive = false
+        providerBrowser.stopBrowsingForPeers()
+    }
+
+    private func stopRelayBrowser() {
+        guard relayBrowserActive else { return }
+        relayBrowserActive = false
+        relayBrowser.stopBrowsingForPeers()
+    }
+
+    private func startProviderBrowser() {
+        guard !providerBrowserActive else { return }
+        providerBrowserActive = true
+        providerBrowser.startBrowsingForPeers()
+    }
+
+    private func startRelayBrowser() {
+        guard !relayBrowserActive else { return }
+        relayBrowserActive = true
+        relayBrowser.startBrowsingForPeers()
     }
 
     private func resetProviderSession() {
@@ -393,8 +444,8 @@ extension MPCBrowser: MCSessionDelegate {
             providerPeerID = peer
             connectionState = .connected
             connectionMode = .direct
-            providerBrowser.stopBrowsingForPeers()
-            relayBrowser.stopBrowsingForPeers()  // stop relay search — direct is preferred
+            stopProviderBrowser()
+            stopRelayBrowser()  // stop relay search — direct is preferred
             // Disconnect relay if we had one
             if relayPeerID != nil {
                 relaySession.disconnect()
@@ -484,6 +535,15 @@ extension MPCBrowser: MCSessionDelegate {
             if envelope.type == .relayAnnounce {
                 if let announce = try? envelope.unwrap(as: RelayAnnounce.self) {
                     print("Received RelayAnnounce: \(announce.relayName) with \(announce.reachableProviders.count) provider(s)")
+                    // Check if our current provider is still reachable
+                    if let currentProviderID = relayProviderID {
+                        let stillAvailable = announce.reachableProviders.contains { $0.providerID == currentProviderID }
+                        if !stillAvailable {
+                            print("Provider \(currentProviderID.prefix(8))... no longer reachable via relay")
+                            handleProviderLostViaRelay()
+                            return
+                        }
+                    }
                     // If we don't have a provider yet, pick the first one
                     if relayProviderID == nil, let first = announce.reachableProviders.first {
                         relayProviderID = first.providerID
@@ -517,10 +577,10 @@ extension MPCBrowser: MCSessionDelegate {
                 connectionMode = .relayed(relayName: relayPeerID?.displayName ?? "Relay")
                 // Stop browsing — we're connected
                 if forceRelayMode {
-                    relayBrowser.stopBrowsingForPeers()
+                    stopRelayBrowser()
                 } else {
-                    providerBrowser.stopBrowsingForPeers()
-                    relayBrowser.stopBrowsingForPeers()
+                    stopProviderBrowser()
+                    stopRelayBrowser()
                 }
                 print("Relayed connection to provider: \(announce.providerName) via \(peerID.displayName)")
             }

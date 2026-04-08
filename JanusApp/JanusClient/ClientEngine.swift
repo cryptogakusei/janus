@@ -41,9 +41,9 @@ class ClientEngine: ObservableObject {
     let browser: MPCBrowser
     private(set) var sessionManager: SessionManager?
     private var cancellables = Set<AnyCancellable>()
-    private var pendingRequestID: String?
-    private var pendingTaskType: TaskType?
-    private var pendingPromptText: String?
+    var pendingRequestID: String?
+    var pendingTaskType: TaskType?
+    var pendingPromptText: String?
     private var requestTimeoutTask: Task<Void, Never>?
 
     /// Optional wallet provider injected from Privy auth.
@@ -138,8 +138,10 @@ class ClientEngine: ObservableObject {
         pendingPromptText = promptText
         disconnectedDuringRequest = false
 
-        // Include channel info on first request so the provider can verify the payment channel
-        let channelInfo = session.channelInfoDelivered ? nil : session.channelInfo
+        // Always include channel info so the provider can set up or verify the channel.
+        // ChannelInfo includes clientCumulativeSpend so the provider can tell if the
+        // client actually missed a response (vs. idle reconnect).
+        let channelInfo = session.channelInfo
 
         let request = PromptRequest(
             requestID: requestID,
@@ -171,7 +173,7 @@ class ClientEngine: ObservableObject {
 
     // MARK: - Message handling
 
-    private func handleMessage(_ envelope: MessageEnvelope) {
+    func handleMessage(_ envelope: MessageEnvelope) {
         switch envelope.type {
         case .quoteResponse:
             guard let quote = try? envelope.unwrap(as: QuoteResponse.self) else { return }
@@ -210,7 +212,6 @@ class ClientEngine: ObservableObject {
                     payload: auth
                 )
                 try browser.send(envelope)
-                session.channelInfoDelivered = true
                 requestState = .waitingForResponse
             } catch {
                 errorMessage = "Failed to authorize: \(error.localizedDescription)"

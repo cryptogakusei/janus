@@ -27,10 +27,12 @@ class SessionManager: ObservableObject {
     private(set) var ethKeyPair: EthKeyPair?
     private(set) var walletProvider: (any WalletProvider)?
     private(set) var channel: Channel?
-    private(set) var channelInfo: ChannelInfo?
+    /// Computed: includes current cumulativeSpend so the provider can detect missed responses.
+    var channelInfo: ChannelInfo? {
+        guard let ch = channel else { return nil }
+        return ChannelInfo(channel: ch, config: tempoConfig, clientCumulativeSpend: spendState.cumulativeSpend)
+    }
     private let tempoConfig = TempoConfig.testnet
-    /// Whether the channel info has been sent to the provider.
-    var channelInfoDelivered = false
     /// Whether the channel has been successfully opened on-chain.
     var channelOpenedOnChain = false
     /// On-chain channel status.
@@ -168,7 +170,6 @@ class SessionManager: ObservableObject {
             config: tempoConfig
         )
         self.channel = ch
-        self.channelInfo = ChannelInfo(channel: ch, config: tempoConfig)
         let chIdHex = ch.channelId.ethHexPrefixed
         os_log("CLIENT_CHANNEL_ID=%{public}@", log: smokeLog, type: .default, chIdHex)
         print("Tempo channel created: \(chIdHex.prefix(18))... deposit=\(ch.deposit)")

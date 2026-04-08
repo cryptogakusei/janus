@@ -347,26 +347,43 @@ class ProviderEngine: ObservableObject {
                 }
                 return
             }
-            // Always update channel — client may reconnect with a new keypair
-            let channel = Channel(
-                payer: info.payerAddress, payee: info.payeeAddress,
-                token: info.tokenAddress, salt: info.salt,
-                authorizedSigner: info.authorizedSigner,
-                deposit: info.deposit, config: tempoConfig
-            )
-            let isUpdate = channels[request.sessionID] != nil
-            channels[request.sessionID] = channel
-            activeSessionCount = channels.count
-            let verifyStatus: String
-            switch result {
-            case .acceptedOnChain(let deposit): verifyStatus = "on-chain verified (deposit=\(deposit))"
-            case .acceptedOffChainOnly: verifyStatus = "off-chain only"
-            case .rejected: verifyStatus = "rejected"
+
+            // Detect missed response: compare client's reported spend with our last
+            // response. If the client's spend is behind, they missed the response and
+            // need SessionSync to recover. If equal, they got it (idle reconnect).
+            let existingChannel = channels[request.sessionID]
+            if existingChannel != nil, let missed = lastResponses[request.sessionID],
+               info.clientCumulativeSpend < missed.cumulativeSpend {
+                let sync = SessionSync(sessionID: request.sessionID, missedResponse: missed)
+                send(type: .sessionSync, payload: sync, toSession: request.sessionID)
+                print("SessionSync: client spend=\(info.clientCumulativeSpend) < provider=\(missed.cumulativeSpend), recovering session \(request.sessionID.prefix(8))...")
             }
-            print("Tempo channel \(isUpdate ? "updated" : "cached") for session \(request.sessionID.prefix(8))...: \(verifyStatus)")
-            os_log("CLIENT_CHANNEL_PAYER=%{public}@", log: smokeLog, type: .default, info.payerAddress.checksumAddress)
-            os_log("CLIENT_CHANNEL_ID=%{public}@", log: smokeLog, type: .default, info.channelId.ethHexPrefixed)
-            os_log("CLIENT_CHANNEL_DEPOSIT=%{public}d", log: smokeLog, type: .default, info.deposit)
+
+            // Only replace channel if it's new or has different params (e.g., new keypair).
+            // Preserving the existing channel keeps voucher history (authorizedAmount).
+            if existingChannel?.channelId != info.channelId {
+                let channel = Channel(
+                    payer: info.payerAddress, payee: info.payeeAddress,
+                    token: info.tokenAddress, salt: info.salt,
+                    authorizedSigner: info.authorizedSigner,
+                    deposit: info.deposit, config: tempoConfig
+                )
+                let isUpdate = existingChannel != nil
+                channels[request.sessionID] = channel
+                activeSessionCount = channels.count
+                let verifyStatus: String
+                switch result {
+                case .acceptedOnChain(let deposit): verifyStatus = "on-chain verified (deposit=\(deposit))"
+                case .acceptedOffChainOnly: verifyStatus = "off-chain only"
+                case .rejected: verifyStatus = "rejected"
+                }
+                print("Tempo channel \(isUpdate ? "updated" : "cached") for session \(request.sessionID.prefix(8))...: \(verifyStatus)")
+                os_log("CLIENT_CHANNEL_PAYER=%{public}@", log: smokeLog, type: .default, info.payerAddress.checksumAddress)
+                os_log("CLIENT_CHANNEL_ID=%{public}@", log: smokeLog, type: .default, info.channelId.ethHexPrefixed)
+                os_log("CLIENT_CHANNEL_DEPOSIT=%{public}d", log: smokeLog, type: .default, info.deposit)
+            } else if existingChannel != nil {
+                print("Tempo channel unchanged for session \(request.sessionID.prefix(8))... (same channelId)")
+            }
         }
 
         // Check session has an active payment channel

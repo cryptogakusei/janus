@@ -175,6 +175,7 @@ class MPCRelay: NSObject, ObservableObject {
               let session = providerSessions[providerPeer],
               session.connectedPeers.contains(providerPeer) else {
             print("[Relay] Cannot forward to provider \(providerID) — not connected")
+            sendProviderUnreachableError(to: clientPeer)
             return
         }
 
@@ -224,6 +225,33 @@ class MPCRelay: NSObject, ObservableObject {
             print("[Relay] Forwarded provider→client count=\(forwardedCount)")
         } catch {
             print("[Relay] Failed to forward to client: \(error)")
+        }
+    }
+
+    /// Send a providerUnreachable error back to a client whose message could not be forwarded.
+    private func sendProviderUnreachableError(to clientPeer: MCPeerID) {
+        guard let session = clientSessions[clientPeer] else { return }
+        let error = ErrorResponse(
+            requestID: nil,
+            errorCode: .providerUnreachable,
+            errorMessage: "Provider is no longer reachable through this relay"
+        )
+        do {
+            let innerEnvelope = try MessageEnvelope.wrap(
+                type: .errorResponse,
+                senderID: "relay",
+                payload: error
+            )
+            let relayEnvelope = try RelayEnvelope.wrap(
+                envelope: innerEnvelope,
+                destinationID: "client",
+                originID: "relay"
+            )
+            let data = try relayEnvelope.serialized()
+            try session.send(data, toPeers: [clientPeer], with: .reliable)
+            print("[Relay] Sent providerUnreachable error to \(clientPeer.displayName)")
+        } catch {
+            print("[Relay] Failed to send error to client: \(error)")
         }
     }
 
@@ -284,6 +312,10 @@ extension MPCRelay: MCNearbyServiceBrowserDelegate {
             providerRoutes.removeValue(forKey: providerID)
             peerToProviderID.removeValue(forKey: peerID)
             providerSessions.removeValue(forKey: peerID)
+            // Notify all connected clients that provider list changed
+            for clientPeer in connectedClients.keys {
+                sendRelayAnnounce(to: clientPeer)
+            }
             stopAdvertisingIfNeeded()
             print("[Relay] Lost provider: \(peerID.displayName)")
         }
@@ -328,6 +360,10 @@ extension MPCRelay: MCSessionDelegate {
                 print("[Relay] Provider disconnected: \(peer.displayName)")
             }
             providerSessions.removeValue(forKey: peer)
+            // Notify all connected clients that provider list changed
+            for clientPeer in connectedClients.keys {
+                sendRelayAnnounce(to: clientPeer)
+            }
             stopAdvertisingIfNeeded()
         case .connecting:
             break

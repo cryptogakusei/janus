@@ -43,6 +43,9 @@ public struct ChannelInfo: Codable, Sendable {
     public let authorizedSigner: EthAddress
     public let deposit: UInt64
     public let channelId: Data  // 32 bytes — provider verifies this matches computeId()
+    /// Client's current cumulative spend — lets the provider detect if the client
+    /// missed a response (clientCumulativeSpend < provider's lastResponse.cumulativeSpend).
+    public let clientCumulativeSpend: Int
 
     public init(
         payerAddress: EthAddress,
@@ -51,7 +54,8 @@ public struct ChannelInfo: Codable, Sendable {
         salt: Data,
         authorizedSigner: EthAddress,
         deposit: UInt64,
-        channelId: Data
+        channelId: Data,
+        clientCumulativeSpend: Int = 0
     ) {
         self.payerAddress = payerAddress
         self.payeeAddress = payeeAddress
@@ -60,10 +64,11 @@ public struct ChannelInfo: Codable, Sendable {
         self.authorizedSigner = authorizedSigner
         self.deposit = deposit
         self.channelId = channelId
+        self.clientCumulativeSpend = clientCumulativeSpend
     }
 
     /// Construct from an existing Channel object.
-    public init(channel: Channel, config: TempoConfig) {
+    public init(channel: Channel, config: TempoConfig, clientCumulativeSpend: Int = 0) {
         self.payerAddress = channel.payer
         self.payeeAddress = channel.payee
         self.tokenAddress = channel.token
@@ -71,5 +76,6 @@ public struct ChannelInfo: Codable, Sendable {
         self.authorizedSigner = channel.authorizedSigner
         self.deposit = channel.deposit
         self.channelId = channel.channelId
+        self.clientCumulativeSpend = clientCumulativeSpend
     }
 }
