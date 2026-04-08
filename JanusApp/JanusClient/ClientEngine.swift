@@ -95,9 +95,13 @@ class ClientEngine: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Forward relay providers list from browser (if applicable)
+        // Forward relay providers list from transport (browser or local transport)
         if let browser = browserRef {
             browser.$relayProviders
+                .map { Array($0.values) }
+                .assign(to: &$availableProviders)
+        } else if let localTransport = transport as? RelayLocalTransport {
+            localTransport.$relayProviders
                 .map { Array($0.values) }
                 .assign(to: &$availableProviders)
         }
@@ -111,7 +115,11 @@ class ClientEngine: ObservableObject {
 
     /// Switch to a different provider available through the relay.
     func selectProvider(_ providerID: String) {
-        browserRef?.selectRelayProvider(providerID)
+        if let browser = browserRef {
+            browser.selectRelayProvider(providerID)
+        } else if let localTransport = transport as? RelayLocalTransport {
+            localTransport.selectProvider(providerID)
+        }
     }
 
     func startSearching() {

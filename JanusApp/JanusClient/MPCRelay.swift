@@ -1,5 +1,6 @@
 import Foundation
 import MultipeerConnectivity
+import Combine
 import JanusShared
 import UIKit
 
@@ -50,6 +51,7 @@ class MPCRelay: NSObject, ObservableObject {
 
     /// When non-nil, the relay also acts as a client via this local transport.
     private(set) var localTransport: RelayLocalTransport?
+    private var localTransportCancellables = Set<AnyCancellable>()
 
     /// Maps requestID → routing destination for dual-mode response routing.
     /// When a response arrives, we extract its requestID and look up who sent it.
@@ -474,25 +476,61 @@ class MPCRelay: NSObject, ObservableObject {
     func enableLocalClient() -> RelayLocalTransport {
         let transport = RelayLocalTransport(relay: self)
         localTransport = transport
-        // If we're already connected to a provider, mirror that state
-        if let announce = reachableProviders.values.first {
+        // Mirror all current providers
+        transport.relayProviders = reachableProviders
+        // Auto-select first provider if available
+        if let (id, announce) = reachableProviders.first {
             transport.connectedProvider = announce
+            transport.selectedProviderID = id
             transport.connectionState = .connected
         }
+        // Subscribe to reachableProviders changes to keep local transport in sync
+        $reachableProviders
+            .sink { [weak transport] providers in
+                transport?.relayProviders = providers
+                // If selected provider was removed, auto-select next
+                if let selectedID = transport?.selectedProviderID, providers[selectedID] == nil {
+                    if let (nextID, nextAnnounce) = providers.first {
+                        transport?.connectedProvider = nextAnnounce
+                        transport?.selectedProviderID = nextID
+                    } else {
+                        transport?.connectedProvider = nil
+                        transport?.selectedProviderID = nil
+                        transport?.connectionState = .disconnected
+                    }
+                }
+                // If no provider selected but some available, auto-select
+                if transport?.selectedProviderID == nil, let (id, announce) = providers.first {
+                    transport?.connectedProvider = announce
+                    transport?.selectedProviderID = id
+                    transport?.connectionState = .connected
+                }
+            }
+            .store(in: &localTransportCancellables)
         return transport
     }
 
     /// Send a message from the local client directly to the upstream provider.
     /// Called by `RelayLocalTransport.send()`.
     func sendLocalMessage(_ envelope: MessageEnvelope) throws {
-        guard let (providerPeer, session) = providerSessions.first(where: {
-            $0.value.connectedPeers.contains($0.key)
-        }) else {
+        // Route to the selected provider, or fall back to any connected provider
+        let targetPeer: MCPeerID
+        let targetSession: MCSession
+        if let selectedID = localTransport?.selectedProviderID,
+           let route = providerRoutes[selectedID],
+           let session = providerSessions[route],
+           session.connectedPeers.contains(route) {
+            targetPeer = route
+            targetSession = session
+        } else if let (peer, session) = providerSessions.first(where: { $0.value.connectedPeers.contains($0.key) }) {
+            targetPeer = peer
+            targetSession = session
+        } else {
             throw NSError(domain: "MPCRelay", code: 1, userInfo: [NSLocalizedDescriptionKey: "No provider connected"])
         }
 
         let data = try envelope.serialized()
-        try session.send(data, toPeers: [providerPeer], with: .reliable)
+        try targetSession.send(data, toPeers: [targetPeer], with: .reliable)
 
         // Track requestID for response routing
         if envelope.type == .promptRequest {
@@ -518,6 +556,10 @@ class RelayLocalTransport: ObservableObject, ProviderTransport {
     @Published var connectedProvider: ServiceAnnounce?
     @Published var isSearching: Bool = false
     @Published var connectionState: ConnectionState = .disconnected
+    /// All providers available through the relay (mirrors relay's reachableProviders).
+    @Published var relayProviders: [String: ServiceAnnounce] = [:]
+    /// Which provider the local client is targeting.
+    var selectedProviderID: String?
 
     var connectionMode: ConnectionMode {
         connectedProvider != nil ? .direct : .disconnected
@@ -532,6 +574,14 @@ class RelayLocalTransport: ObservableObject, ProviderTransport {
 
     init(relay: MPCRelay) {
         self.relay = relay
+    }
+
+    /// Switch to a different provider available through the relay.
+    func selectProvider(_ providerID: String) {
+        guard let announce = relayProviders[providerID] else { return }
+        connectedProvider = announce
+        selectedProviderID = providerID
+        print("[LocalTransport] Switched to provider: \(announce.providerName)")
     }
 
     func send(_ envelope: MessageEnvelope) throws {
