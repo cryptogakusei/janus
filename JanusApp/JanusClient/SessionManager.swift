@@ -38,11 +38,21 @@ class SessionManager: ObservableObject {
     /// On-chain channel status.
     @Published var channelOnChainStatus: String = ""
 
-    private static let filename = "client_session.json"
+    /// Per-provider session filename so switching providers doesn't overwrite sessions.
+    private static func filename(for providerID: String) -> String {
+        "client_session_\(providerID).json"
+    }
+
+    /// Stored providerID for determining which file to persist to.
+    private let providerID: String
 
     /// Try to restore a persisted session for this provider. Returns nil if none exists or expired.
     static func restore(providerID: String, walletProvider: (any WalletProvider)? = nil, store: JanusStore = .appDefault) -> SessionManager? {
-        guard let persisted = store.load(PersistedClientSession.self, from: filename),
+        // Try per-provider file first, fall back to legacy single file for migration
+        let perProviderFile = filename(for: providerID)
+        let legacyFile = "client_session.json"
+        let file = store.load(PersistedClientSession.self, from: perProviderFile) != nil ? perProviderFile : legacyFile
+        guard let persisted = store.load(PersistedClientSession.self, from: file),
               persisted.isValid,
               persisted.sessionGrant.providerID == providerID else {
             return nil
@@ -59,6 +69,7 @@ class SessionManager: ObservableObject {
         self.clientKeyPair = kp
         self.clientSigner = JanusSigner(keyPair: kp)
         self.sessionGrant = persisted.sessionGrant
+        self.providerID = persisted.sessionGrant.providerID
         self.spendState = persisted.spendState
         self.remainingCredits = persisted.remainingCredits
         self.receipts = persisted.receipts
@@ -103,6 +114,7 @@ class SessionManager: ObservableObject {
         self.clientKeyPair = keyPair
         self.clientSigner = JanusSigner(keyPair: keyPair)
         self.sessionGrant = grant
+        self.providerID = grant.providerID
         self.spendState = SpendState(sessionID: grant.sessionID)
         self.remainingCredits = grant.maxCredits
         self.walletProvider = walletProvider
@@ -261,7 +273,7 @@ class SessionManager: ObservableObject {
 
     /// Clear persisted session (e.g. on session expiry or manual reset).
     func clearPersistedSession() {
-        store.delete(Self.filename)
+        store.delete(Self.filename(for: providerID))
     }
 
     // MARK: - Persistence
@@ -276,7 +288,7 @@ class SessionManager: ObservableObject {
             ethPrivateKeyHex: ethKeyPair?.privateKeyData.ethHexPrefixed
         )
         do {
-            try store.save(state, as: Self.filename)
+            try store.save(state, as: Self.filename(for: providerID))
             print("Client session persisted: \(remainingCredits) credits, \(history.count) history")
         } catch {
             print("Failed to persist client session: \(error)")
