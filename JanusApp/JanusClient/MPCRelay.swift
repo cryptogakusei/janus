@@ -621,6 +621,11 @@ extension MPCRelay: MCNearbyServiceBrowserDelegate {
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
         Task { @MainActor in
             guard let providerID = peerToProviderID[peerID] else { return }
+            // Ignore if MCSession to this provider is still connected — AWDL visibility flicker
+            if let session = providerSessions[peerID], session.connectedPeers.contains(peerID) {
+                print("[Relay] lostPeer for provider \(peerID.displayName) but session still active — ignoring AWDL flicker")
+                return
+            }
             reachableProviders.removeValue(forKey: providerID)
             providerRoutes.removeValue(forKey: providerID)
             peerToProviderID.removeValue(forKey: peerID)

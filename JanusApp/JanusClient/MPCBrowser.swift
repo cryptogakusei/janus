@@ -429,12 +429,22 @@ extension MPCBrowser: MCNearbyServiceBrowserDelegate {
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
         Task { @MainActor in
             if peerID == providerPeerID {
+                // Ignore if MCSession is still connected — AWDL visibility flicker
+                guard !providerSession.connectedPeers.contains(peerID) else {
+                    print("lostPeer for provider but session still active — ignoring AWDL flicker")
+                    return
+                }
                 connectedProvider = nil
                 providerPeerID = nil
                 connectionState = .disconnected
                 connectionMode = .disconnected
                 scheduleReconnect()
             } else if peerID == relayPeerID {
+                // Ignore if MCSession is still connected — AWDL visibility flicker
+                guard !relaySession.connectedPeers.contains(peerID) else {
+                    print("lostPeer for relay but session still active — ignoring AWDL flicker")
+                    return
+                }
                 connectedProvider = nil
                 relayPeerID = nil
                 relayProviderID = nil
