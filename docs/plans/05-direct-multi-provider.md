@@ -1,6 +1,6 @@
 # Feature #5: Direct Mode Multi-Provider Support
 
-**Status:** Implemented (2026-04-08)
+**Status:** Reverted (2026-04-08) — AWDL unreliable for concurrent MPC sessions. Deferred to Bonjour+TCP transport (roadmap #8).
 **Dependencies:** #4 (Multi-Provider Relay Support) — completed
 
 ## Context

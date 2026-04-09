@@ -1519,7 +1519,39 @@ Provider disconnect via relay now notifies clients. `handleProviderLostViaRelay(
 - Lock/unlock: no false "(recovered)" responses ✓
 - Two simultaneous clients ✓
 
-### Remaining work roadmap (as of 2026-04-07)
+## 2026-04-08
+
+### Feature #5: Direct mode multi-provider — attempted and reverted
+
+**Goal:** Allow iPhone in direct MPC mode to discover, connect to, and switch between multiple nearby providers (two Macs).
+
+**Approach:** Since `MCSession` supports up to 8 peers, all discovered providers would be invited into the same session. Switching providers would just change which peer receives `send()` calls via `providerPeerID`. Later revised to per-provider `MCSession` pattern (matching `MPCAdvertiser.createSession(for:)`) when shared session proved unreliable over AWDL.
+
+**Result:** Reverted. AWDL does not reliably support concurrent MPC sessions from a single device to multiple providers. Connection instability across both shared-session and per-session approaches. Direct multi-provider deferred to Bonjour+TCP transport (roadmap #8).
+
+**Lessons learned:**
+- `MCSession` multi-peer works over infrastructure WiFi but is unreliable over AWDL
+- Per-provider `MCSession` (separate session per Mac) also unstable — AWDL can't multiplex
+- Relaxing the `foundPeer` guard to accept peers during `.connecting` caused direct+relay race conditions
+- Relay multi-provider (Feature #4) works because each device maintains only one direct MPC connection
+
+### Fix: AWDL flicker causing relay instability
+
+**Problem:** MPC browser's `lostPeer` delegate fires when a peer's Bonjour advertisement briefly disappears from AWDL, even while the `MCSession` to that peer remains connected. Both `MPCBrowser` and `MPCRelay` treated `lostPeer` as a hard disconnect, tearing down the connection and triggering reconnect cycles. This caused the "connected → disconnected → connected → connecting" instability pattern in relay mode.
+
+**Root cause:** `lostPeer` is a browsing-layer event (Bonjour visibility), not a session-layer event (`MCSession` state). AWDL visibility flickers are normal — they don't mean the session is dead.
+
+**Fix:** Guard `lostPeer` handlers in both `MPCBrowser` and `MPCRelay` to check `session.connectedPeers.contains(peerID)` before acting. If the session is still active, log "ignoring AWDL flicker" and return.
+
+- `JanusApp/JanusClient/MPCBrowser.swift` — guard both provider and relay `lostPeer` paths
+- `JanusApp/JanusClient/MPCRelay.swift` — guard provider `lostPeer` path
+
+#### Regression testing (2026-04-08)
+- Test 1: Single provider, direct mode ✓
+- Test 2: Both Macs, dual mode ✓
+- Test 3: Relay mode (Madhuri dual mode relay, Soubhik forced relay) ✓ — stable after fix
+
+### Remaining work roadmap (as of 2026-04-08)
 
 Full prioritized list of all remaining features across relay, transport, payments, and long-term mesh vision.
 
