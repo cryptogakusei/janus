@@ -1717,3 +1717,94 @@ When connected via relay, the client can see and switch between multiple provide
 - `docs/plans/04-multi-provider.md`
 - `docs/plans/05-direct-multi-provider.md` (planned, not yet implemented)
 - **Long-term** (#15–19): mesh network with encryption, multi-hop, and incentives
+
+---
+
+### Feature #8: Bonjour+TCP Transport (commit 906473f, c629230)
+
+Added Bonjour+TCP as a parallel transport alongside MPC/AWDL using Network.framework (`NWBrowser`, `NWListener`, `NWConnection`). Devices on the same LAN discover each other via mDNS (`_janus-tcp._tcp`) and communicate over plain TCP — faster and more reliable than AWDL. MPC stays warm as instant fallback.
+
+#### What was built
+
+**Shared layer:**
+- `TCPFramer` (JanusShared) — 4-byte big-endian length-prefix framing with 16MB max frame size. `Deframer` class handles partial reads and concatenated frames.
+
+**Provider side:**
+- `ProviderAdvertiserTransport` protocol — abstracts `MPCAdvertiser` vs `BonjourAdvertiser`
+- `BonjourAdvertiser` — `NWListener` on dynamic TCP port, per-client state tracking (temp UUID → senderID on first message), pull-based receive loop with `TCPFramer.Deframer`
+- `CompositeAdvertiser` — wraps both advertisers, routes replies to correct child via `senderTransport` map
+- `MPCAdvertiser` conformed to new protocol (callback changed from `MCPeerID` to `String` senderID)
+- `ProviderStatusView` updated to use `CompositeAdvertiser`
+
+**Client side:**
+- `BonjourBrowser` — `NWBrowser` for `_janus-tcp._tcp`, multi-provider support, auto-reconnect with backoff, `selectProvider()` for instant switching
+- `CompositeTransport` — wraps `BonjourBrowser` + `MPCBrowser`, both stay running. Bonjour preferred (~100-200ms connect vs AWDL's ~2-5s). MPC warm fallback.
+- `ClientEngine` updated: default transport is `CompositeTransport`, `compositeRef` exposes child transports, `availableProviders` merges relay (MPC) + direct (Bonjour)
+
+**Tests:** 14 new tests (TCPFramingTests: 8, BonjourTransportTests: 6), all 221 pass.
+
+#### Bugs found and fixed
+
+**CompositeTransport connectedProvider race condition:**
+MPC's `connectionState` becomes `.connected` before `ServiceAnnounce` arrives (connectedProvider still nil). Initial fix that re-ran `resolveActiveTransport` on connectedProvider changes made things worse — overwriting real Bonjour connectedProvider with nil from MPC's delayed state.
+
+**Fix:** Separate `$connectedProvider` subscriptions per child that only forward when `activeTransport` matches. `resolveActiveTransport` only sets `connectedProvider` when the value is non-nil. The two-subscription pattern decouples transport selection (driven by connectionState) from provider identity (driven by connectedProvider).
+
+**MultiProviderTests backward compatibility:**
+Tests inject standalone `MPCBrowser` directly into `ClientEngine`. After renaming `browserRef` to `compositeRef`, the `availableProviders` and `selectProvider` paths broke. Fixed by adding `else if let browser = transport as? MPCBrowser` fallback in ClientEngine.
+
+#### Manual testing results (2026-04-08)
+
+| Test | Result |
+|------|--------|
+| Direct Bonjour+TCP (iPhone → Mac via WiFi) | PASS — connects ~200ms |
+| Relay mode (MPC path) | PASS — no regression |
+| Dual mode (relay + local client) | PASS — no regression |
+| MPC fallback (WiFi off, cellular on) | PASS — falls back to MPC/AWDL |
+| MPC fallback (WiFi off, no cellular) | PASS — MPC/AWDL still works |
+
+#### Plan doc: `docs/plans/08-bonjour-tcp-transport.md`
+
+---
+
+### Critical Issue Discovered: Offline Voucher Signing Fails with Privy
+
+During the MPC fallback manual test (WiFi off, no cellular), Madhuri's iPhone showed: **"Failed to authorize: The Internet connection appears to be offline"**.
+
+#### Root cause analysis
+
+When Privy is active, the voucher signing path is:
+
+```
+ClientEngine.handleQuote()
+  → SessionManager.createVoucherAuthorization()  [async]
+    → walletProvider.signVoucher(voucher, config)
+      → PrivyWalletProvider.signVoucher()
+        → wallet.provider.request(rpcRequest)   ← NETWORK CALL TO PRIVY MPC API
+```
+
+`PrivyWalletProvider.signVoucher()` calls Privy's MPC signing API over the internet. The private key is split via threshold signatures (MPC-TSS) between Privy's infrastructure and the device — both shares are needed to sign. **No internet = no signature = no payment = no inference.**
+
+This breaks Janus's core premise: offline-first AI inference for rural/disaster areas with intermittent connectivity.
+
+#### Why it matters
+
+The payment channel model was specifically designed for offline operation:
+1. **Online (edge):** Client opens channel, deposits funds on-chain
+2. **Offline (core):** Client signs vouchers locally, provider verifies locally via `ecrecover` — no chain access needed
+3. **Online (edge):** Provider settles cumulative voucher on-chain when internet returns
+
+Step 2 is entirely local crypto — `ecrecover` on a secp256k1 signature against the channel's `authorizedSigner`. But with Privy as signer, step 2 requires internet, defeating the entire design.
+
+#### Chosen solution: Option 3 — Local key as authorizedSigner
+
+Always use the local `EthKeyPair` as the `authorizedSigner` in Tempo channels. Privy handles identity and funding only. Voucher signing is always local → works offline → settles on-chain because `ecrecover` matches `authorizedSigner`.
+
+**Why this works:**
+- `authorizedSigner` is set at channel open time (on-chain, while internet is available)
+- Provider verifies vouchers via `ecrecover(signature) == channel.authorizedSigner`
+- If `authorizedSigner` = local key address, and local key signs the voucher, verification passes
+- Privy wallet address is still the user's identity, used for funding the local payer key
+- Channel structure already supports separate payer and authorizedSigner fields
+
+**Plan doc:** `docs/plans/12a-offline-voucher-signing.md`

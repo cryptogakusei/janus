@@ -8,8 +8,10 @@ private let smokeLog = OSLog(subsystem: "com.janus.client", category: "SmokeTest
 /// Manages the client's session state: keypair, session grant, spend tracking, and Tempo channel.
 ///
 /// Creates a local session grant for identity tracking, then sets up a Tempo
-/// payment channel with the provider. Vouchers are signed via WalletProvider
-/// (Privy MPC or local key). Persists state to disk so sessions survive app restarts.
+/// payment channel with the provider. Vouchers are always signed via a local
+/// `EthKeyPair` wrapped in `LocalWalletProvider` — works offline.
+/// Privy (if present) is used for identity/funding only, not signing.
+/// Persists state to disk so sessions survive app restarts.
 @MainActor
 class SessionManager: ObservableObject {
 
@@ -26,6 +28,8 @@ class SessionManager: ObservableObject {
     // Tempo payment channel
     private(set) var ethKeyPair: EthKeyPair?
     private(set) var walletProvider: (any WalletProvider)?
+    /// Privy wallet address for identity/display only (not used for signing).
+    private(set) var privyIdentityAddress: EthAddress?
     private(set) var channel: Channel?
     /// Computed: includes current cumulativeSpend so the provider can detect missed responses.
     var channelInfo: ChannelInfo? {
@@ -76,15 +80,23 @@ class SessionManager: ObservableObject {
         self.history = persisted.history
         self.store = store
 
-        // Use injected wallet provider (Privy) or restore local ETH keypair
-        if let wp = walletProvider {
-            self.walletProvider = wp
-            print("Using injected wallet provider: \(wp.address)")
-        } else if let ethHex = persisted.ethPrivateKeyHex, let ethKP = try? EthKeyPair(hexPrivateKey: ethHex) {
-            self.ethKeyPair = ethKP
-            self.walletProvider = LocalWalletProvider(keyPair: ethKP, rpcURL: tempoConfig.rpcURL)
-            print("Restored ETH keypair: \(ethKP.address)")
+        // Always restore local ETH keypair if persisted (used for on-chain ops AND voucher signing)
+        if let ethHex = persisted.ethPrivateKeyHex {
+            do {
+                let ethKP = try EthKeyPair(hexPrivateKey: ethHex)
+                self.ethKeyPair = ethKP
+                print("Restored ETH keypair: \(ethKP.address)")
+            } catch {
+                print("WARNING: Failed to restore ETH keypair: \(error). A new key will be generated, which may orphan an existing on-chain channel.")
+            }
         }
+
+        // Capture Privy identity for display (not used for signing)
+        if let wp = walletProvider {
+            self.privyIdentityAddress = wp.address
+            print("Privy identity present: \(wp.address) (identity only, not used for signing)")
+        }
+        // walletProvider is set in setupTempoChannel() — always LocalWalletProvider
     }
 
     /// Create a new session with a locally-generated identity.
@@ -117,7 +129,11 @@ class SessionManager: ObservableObject {
         self.providerID = grant.providerID
         self.spendState = SpendState(sessionID: grant.sessionID)
         self.remainingCredits = grant.maxCredits
-        self.walletProvider = walletProvider
+        // Don't store Privy as walletProvider — setupTempoChannel() always sets LocalWalletProvider.
+        // Capture Privy address for identity/display only.
+        if let wp = walletProvider {
+            self.privyIdentityAddress = wp.address
+        }
         self.store = store
         persist()
     }
@@ -125,10 +141,9 @@ class SessionManager: ObservableObject {
     /// Set up a Tempo payment channel for this session.
     /// Called after receiving ServiceAnnounce with a provider Ethereum address.
     ///
-    /// When a Privy wallet is injected, it becomes the `authorizedSigner` (signs vouchers)
-    /// while a local `EthKeyPair` serves as the `payer` (funds and opens the channel on-chain).
-    /// Privy's embedded wallet can't send raw transactions to custom chains like Tempo,
-    /// but it can sign EIP-712 typed data for vouchers.
+    /// Always uses the local `EthKeyPair` as both payer and authorizedSigner.
+    /// This ensures voucher signing works offline (pure local secp256k1 crypto).
+    /// Privy (if present) is identity/funding only — not involved in the payment channel.
     func setupTempoChannel(providerEthAddress: String) {
         let payerAddress: EthAddress
         let signerAddress: EthAddress
@@ -150,16 +165,17 @@ class SessionManager: ObservableObject {
         os_log("CLIENT_ETH_ADDRESS=%{public}@ (payer)", log: smokeLog, type: .default, addr)
         print("CLIENT ETH ADDRESS (payer): \(addr)")
 
-        if let wp = walletProvider {
-            // Privy wallet signs vouchers; local key pays on-chain
-            signerAddress = wp.address
-            let sigAddr = wp.address.checksumAddress
-            os_log("CLIENT_SIGNER_ADDRESS=%{public}@ (Privy wallet)", log: smokeLog, type: .default, sigAddr)
-            print("CLIENT SIGNER ADDRESS (Privy): \(sigAddr)")
-        } else {
-            // No Privy — local key does both
-            signerAddress = ethKP.address
-            self.walletProvider = LocalWalletProvider(keyPair: ethKP, rpcURL: tempoConfig.rpcURL)
+        // Always use local key as authorizedSigner — works offline.
+        // Privy wallet (if present) is identity/funding only.
+        signerAddress = ethKP.address
+        self.walletProvider = LocalWalletProvider(keyPair: ethKP, rpcURL: tempoConfig.rpcURL)
+
+        let sigAddr = ethKP.address.checksumAddress
+        os_log("CLIENT_SIGNER_ADDRESS=%{public}@ (local key, offline-capable)", log: smokeLog, type: .default, sigAddr)
+        print("CLIENT SIGNER ADDRESS (local, offline-capable): \(sigAddr)")
+
+        if let privyAddr = privyIdentityAddress {
+            os_log("CLIENT_PRIVY_IDENTITY=%{public}@", log: smokeLog, type: .default, privyAddr.checksumAddress)
         }
 
         guard let providerAddr = try? EthAddress(hex: providerEthAddress) else {

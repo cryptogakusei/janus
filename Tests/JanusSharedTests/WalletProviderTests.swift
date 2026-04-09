@@ -215,6 +215,86 @@ final class WalletProviderTests: XCTestCase {
         XCTAssertEqual(channel.authorizedAmount, 35)
     }
 
+    // MARK: - Offline voucher signing (Feature #12a)
+
+    /// Voucher signed with local key verifies against a channel where authorizedSigner is the local key.
+    /// This is the core path after #12a: local key is always the signer.
+    func testVoucherSignedWithLocalKey_verifiesAgainstLocalSigner() async throws {
+        let localKP = try EthKeyPair()
+        let providerKP = try EthKeyPair()
+        let localWallet = LocalWalletProvider(keyPair: localKP)
+
+        let salt = Keccak256.hash(Data("offline-test".utf8))
+        var channel = Channel(
+            payer: localKP.address,
+            payee: providerKP.address,
+            token: config.paymentToken,
+            salt: salt,
+            authorizedSigner: localKP.address,  // Local key as signer (the #12a change)
+            deposit: 100,
+            config: config
+        )
+
+        let verifier = VoucherVerifier(providerAddress: providerKP.address, config: config)
+
+        let voucher = Voucher(channelId: channel.channelId, cumulativeAmount: 10)
+        let signed = try await localWallet.signVoucher(voucher, config: config)
+
+        let quote = QuoteResponse(requestID: "r1", priceCredits: 10, priceTier: "small", expiresAt: Date().addingTimeInterval(60))
+        let auth = VoucherAuthorization(requestID: "r1", quoteID: quote.quoteID, signedVoucher: signed)
+
+        let result = try verifier.verify(authorization: auth, channel: channel, quote: quote)
+        XCTAssertEqual(result.creditsCharged, 10)
+        try channel.acceptVoucher(signed)
+        XCTAssertEqual(channel.authorizedAmount, 10)
+    }
+
+    /// ecrecover on a local-key-signed voucher returns the local key address.
+    /// Proves on-chain settlement would succeed: ecrecover(sig) == authorizedSigner.
+    func testVoucherSignedWithLocalKey_ecrecoverMatchesSigner() async throws {
+        let localKP = try EthKeyPair()
+        let localWallet = LocalWalletProvider(keyPair: localKP)
+
+        let channelId = Keccak256.hash(Data("ecrecover-test".utf8))
+        let voucher = Voucher(channelId: channelId, cumulativeAmount: 42)
+        let signed = try await localWallet.signVoucher(voucher, config: config)
+
+        // Verify via Voucher.verify (uses ecrecover internally)
+        XCTAssertTrue(Voucher.verify(signedVoucher: signed, expectedSigner: localKP.address, config: config))
+    }
+
+    /// Negative test: voucher signed by a different key (simulating Privy) FAILS verification
+    /// against a channel where authorizedSigner is the local key. Catches regressions
+    /// where signing accidentally routes through the wrong wallet.
+    func testPrivySignedVoucher_failsAgainstLocalKeyChannel() async throws {
+        let localKP = try EthKeyPair()      // The authorizedSigner (local key)
+        let privyKP = try EthKeyPair()      // Simulating a Privy wallet (different key)
+        let privyWallet = LocalWalletProvider(keyPair: privyKP)
+        let providerKP = try EthKeyPair()
+
+        let salt = Keccak256.hash(Data("privy-negative-test".utf8))
+        let channel = Channel(
+            payer: localKP.address,
+            payee: providerKP.address,
+            token: config.paymentToken,
+            salt: salt,
+            authorizedSigner: localKP.address,  // Local key as signer
+            deposit: 100,
+            config: config
+        )
+
+        // Sign with the "Privy" key (wrong key)
+        let voucher = Voucher(channelId: channel.channelId, cumulativeAmount: 10)
+        let signed = try await privyWallet.signVoucher(voucher, config: config)
+
+        let verifier = VoucherVerifier(providerAddress: providerKP.address, config: config)
+        let quote = QuoteResponse(requestID: "r1", priceCredits: 10, priceTier: "small", expiresAt: Date().addingTimeInterval(60))
+        let auth = VoucherAuthorization(requestID: "r1", quoteID: quote.quoteID, signedVoucher: signed)
+
+        // Verification should FAIL — ecrecover returns Privy address, not local key address
+        XCTAssertThrowsError(try verifier.verify(authorization: auth, channel: channel, quote: quote))
+    }
+
     // MARK: - Calldata helpers
 
     func testApproveCalldataMatchesFullTransaction() throws {
