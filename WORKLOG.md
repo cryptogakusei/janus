@@ -1808,3 +1808,58 @@ Always use the local `EthKeyPair` as the `authorizedSigner` in Tempo channels. P
 - Channel structure already supports separate payer and authorizedSigner fields
 
 **Plan doc:** `docs/plans/12a-offline-voucher-signing.md`
+
+---
+
+### Feature #12a: Offline Voucher Signing — Implementation (commit 45320af)
+
+#### What was changed
+
+**`SessionManager.swift`** — 3 surgical modifications:
+
+1. **Restore init (lines 83-99):** Always restore `ethKeyPair` from persisted `ethPrivateKeyHex`, regardless of whether Privy is present. Previously, when Privy was active, the local key was never restored — causing a new key (and new channelId) on every app restart. Added explicit `do/catch` for corrupted key data instead of silently swallowing errors with `try?`.
+
+2. **Create init (lines 132-136):** No longer stores Privy as `walletProvider`. Captures `privyIdentityAddress` for display only. Eliminates window where `self.walletProvider` briefly points to Privy between init and `setupTempoChannel()`.
+
+3. **setupTempoChannel (lines 168-179):** Removed Privy/local branching. Always sets `signerAddress = ethKP.address` and `walletProvider = LocalWalletProvider(...)`. Single code path regardless of Privy presence.
+
+**New property:** `privyIdentityAddress: EthAddress?` — captures Privy wallet address for identity/display, separate from signing.
+
+#### Architecture review
+
+Plan reviewed by both `systems-architect` and `architecture-reviewer` agents before implementation. Key findings incorporated:
+- Restore init bug (pre-existing, made critical by this change) — fixed
+- `create()` init briefly storing Privy as walletProvider — fixed
+- No migration logic needed: `Channel` is reconstructed on every launch, not persisted
+- Stranded deposits from old Privy-signed channels: acceptable for testnet, needs close utility for mainnet
+
+#### Tests: 8 new (229 total, all passing)
+
+**SPM (3 new, 171 total):**
+- `testVoucherSignedWithLocalKey_verifiesAgainstLocalSigner` — full VoucherVerifier flow with local key as authorizedSigner
+- `testVoucherSignedWithLocalKey_ecrecoverMatchesSigner` — proves on-chain settlement works (ecrecover matches)
+- `testPrivySignedVoucher_failsAgainstLocalKeyChannel` — negative test: wrong-key voucher rejected
+
+**Xcode (5 new, 58 total):**
+- `testCreateInit_alwaysUsesLocalSignerEvenWithPrivy` — mock Privy injected, walletProvider is still LocalWalletProvider
+- `testOfflineVoucherSigning_noNetworkRequired` — mock Privy's signVoucher never called (signCallCount == 0)
+- `testRestoreInit_alwaysRestoresEthKeyPair` — ethKeyPair survives restore with Privy injected
+- `testChannelId_stableAcrossRestart` — channelId identical after persist → restore → setupTempoChannel
+- `testRestoreInit_corruptedEthKey_generatesNewKey` — corrupted hex → new key generated, system functional
+
+#### Manual device testing (2026-04-09)
+
+**Setup:** Mac = JanusProvider (MLX Qwen3-4B), 2 iPhones = JanusClient with Privy login.
+
+| # | Test | Result | Details |
+|---|------|--------|---------|
+| 1 | Online — Privy login, connect, send queries | PASS | Vouchers signed locally even with internet available |
+| 2 | **Offline — WiFi+cellular off, send query via MPC/AWDL** | **PASS** | Previously showed "The Internet connection appears to be offline". Now works — pure local secp256k1 signing |
+| 3 | Settlement — re-enable internet, provider settles | PASS | `ecrecover` returns local key address, matches `authorizedSigner` on-chain |
+| 4 | Restart — force-quit app, relaunch, send query | PASS | ethKeyPair restored, same channelId, cumulative spend continues (no new channel) |
+| 5 | Transition — existing Privy-signed sessions | PASS | Old sessions (`63EBE013`, `4F8C1705`) replaced by new local-key sessions (`CA178301`, `AC4BD01D`). Settlements succeeded on new channels. |
+
+**Provider log analysis (test 4 verification):**
+Sessions `CA178301` and `AC4BD01D` show continuous cumulative spend progression (3→6→9→...→27) across app restarts, confirming the same channel was reused — ethKeyPair properly restored from persisted data.
+
+#### Status: Feature #12a COMPLETE
