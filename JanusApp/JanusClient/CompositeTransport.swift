@@ -92,15 +92,28 @@ class CompositeTransport: NSObject, ObservableObject, ProviderTransport {
             self?.onMessageReceived?(envelope)
         }
 
-        // Subscribe to both transports' connection states.
-        // Bonjour is preferred — if Bonjour connects, use it.
-        // If only MPC connects, use MPC.
-        // If Bonjour disconnects, fall back to MPC if it's connected.
-
+        // Resolve active transport when connection states change.
+        // Only sets connectionState/connectionMode/activeTransport — NOT connectedProvider.
         bonjourBrowser.$connectionState
             .combineLatest(mpcBrowser.$connectionState)
             .sink { [weak self] bonjourState, mpcState in
                 self?.resolveActiveTransport(bonjourState: bonjourState, mpcState: mpcState)
+            }
+            .store(in: &cancellables)
+
+        // Forward connectedProvider directly from whichever child is active.
+        // This fires when MPC receives ServiceAnnounce (after connectionState is already .connected).
+        mpcBrowser.$connectedProvider
+            .sink { [weak self] provider in
+                guard let self, self.activeTransport == .mpc else { return }
+                self.connectedProvider = provider
+            }
+            .store(in: &cancellables)
+
+        bonjourBrowser.$connectedProvider
+            .sink { [weak self] provider in
+                guard let self, self.activeTransport == .bonjour else { return }
+                self.connectedProvider = provider
             }
             .store(in: &cancellables)
     }
@@ -111,12 +124,18 @@ class CompositeTransport: NSObject, ObservableObject, ProviderTransport {
             activeTransport = .bonjour
             connectionState = .connected
             connectionMode = .direct
-            connectedProvider = bonjourBrowser.connectedProvider
+            // Don't set connectedProvider here — let the $connectedProvider subscription handle it.
+            // It may still be nil if ServiceAnnounce hasn't arrived yet.
+            if let provider = bonjourBrowser.connectedProvider {
+                connectedProvider = provider
+            }
         } else if mpcState == .connected {
             activeTransport = .mpc
             connectionState = .connected
             connectionMode = mpcBrowser.connectionMode
-            connectedProvider = mpcBrowser.connectedProvider
+            if let provider = mpcBrowser.connectedProvider {
+                connectedProvider = provider
+            }
         } else if bonjourState == .connecting || mpcState == .connecting {
             activeTransport = .none
             connectionState = .connecting
