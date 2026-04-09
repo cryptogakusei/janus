@@ -43,9 +43,9 @@ class ClientEngine: ObservableObject {
     }
 
     let transport: any ProviderTransport
-    /// Typed reference for browser-specific features (force relay toggle).
+    /// Typed reference for composite transport features (Bonjour + MPC).
     /// Nil when transport is RelayLocalTransport (dual mode).
-    let browserRef: MPCBrowser?
+    let compositeRef: CompositeTransport?
     private(set) var sessionManager: SessionManager?
     private var cancellables = Set<AnyCancellable>()
     var pendingRequestID: String?
@@ -58,12 +58,12 @@ class ClientEngine: ObservableObject {
     var walletProvider: (any WalletProvider)?
 
     convenience init() {
-        self.init(transport: MPCBrowser())
+        self.init(transport: CompositeTransport())
     }
 
     init(transport: any ProviderTransport) {
         self.transport = transport
-        self.browserRef = transport as? MPCBrowser
+        self.compositeRef = transport as? CompositeTransport
 
         // Forward transport published properties to trigger SwiftUI updates
         transport.isSearchingPublisher
@@ -95,8 +95,22 @@ class ClientEngine: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Forward relay providers list from transport (browser or local transport)
-        if let browser = browserRef {
+        // Forward available providers from transport
+        if let composite = compositeRef {
+            // Merge relay providers (MPC path) + direct providers (Bonjour path)
+            composite.mpcBrowser.$relayProviders
+                .combineLatest(composite.bonjourBrowser.$directProviders)
+                .map { relayProviders, bonjourProviders in
+                    // Merge both, dedup by providerID (Bonjour wins)
+                    var merged = relayProviders
+                    for (id, announce) in bonjourProviders {
+                        merged[id] = announce
+                    }
+                    return Array(merged.values)
+                }
+                .assign(to: &$availableProviders)
+        } else if let browser = transport as? MPCBrowser {
+            // Standalone MPCBrowser (tests or legacy usage)
             browser.$relayProviders
                 .map { Array($0.values) }
                 .assign(to: &$availableProviders)
@@ -113,9 +127,16 @@ class ClientEngine: ObservableObject {
         }
     }
 
-    /// Switch to a different provider available through the relay.
+    /// Switch to a different provider.
     func selectProvider(_ providerID: String) {
-        if let browser = browserRef {
+        if let composite = compositeRef {
+            // Try Bonjour direct first, then relay
+            if composite.bonjourBrowser.directProviders[providerID] != nil {
+                composite.bonjourBrowser.selectProvider(providerID)
+            } else {
+                composite.mpcBrowser.selectRelayProvider(providerID)
+            }
+        } else if let browser = transport as? MPCBrowser {
             browser.selectRelayProvider(providerID)
         } else if let localTransport = transport as? RelayLocalTransport {
             localTransport.selectProvider(providerID)

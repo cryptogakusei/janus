@@ -10,6 +10,7 @@
 		<string>_janus-ai._udp</string>
 		<string>_janus-relay._tcp</string>
 		<string>_janus-relay._udp</string>
+		<string>_janus-tcp._tcp</string>
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>

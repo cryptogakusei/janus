@@ -22,6 +22,9 @@
 		C200000004 /* ProviderEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000005 /* ProviderEngine.swift */; };
 		C200000005 /* MLXRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000006 /* MLXRunner.swift */; };
 		C200000006 /* PromptTemplates.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000007 /* PromptTemplates.swift */; };
+		C200000007 /* ProviderAdvertiserTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000008 /* ProviderAdvertiserTransport.swift */; };
+		C200000008 /* BonjourAdvertiser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000009 /* BonjourAdvertiser.swift */; };
+		C200000009 /* CompositeAdvertiser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000010 /* CompositeAdvertiser.swift */; };
 
 		/* Privy auth files */
 		C100000007 /* PrivyAuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000008 /* PrivyAuthManager.swift */; };
@@ -31,6 +34,8 @@
 		C100000011 /* RelayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000012 /* RelayView.swift */; };
 		C100000012 /* ProviderTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000013 /* ProviderTransport.swift */; };
 		C100000014 /* DualModeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000015 /* DualModeView.swift */; };
+		C100000015 /* BonjourBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000016 /* BonjourBrowser.swift */; };
+		C100000016 /* CompositeTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000017 /* CompositeTransport.swift */; };
 
 		/* SPM product refs */
 		C300000001 /* JanusShared in Frameworks */ = {isa = PBXBuildFile; productRef = D100000001 /* JanusShared */; };
@@ -45,6 +50,8 @@
 		C400000003 /* RelayDisconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000003 /* RelayDisconnectTests.swift */; };
 		C400000004 /* DualModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000004 /* DualModeTests.swift */; };
 		C400000005 /* MultiProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000005 /* MultiProviderTests.swift */; };
+		C400000006 /* TCPFramingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000006 /* TCPFramingTests.swift */; };
+		C400000007 /* BonjourTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000007 /* BonjourTransportTests.swift */; };
 		C300000006 /* JanusShared in Frameworks */ = {isa = PBXBuildFile; productRef = D100000003 /* JanusShared */; };
 /* End PBXBuildFile section */
 
@@ -64,6 +71,8 @@
 		A100000012 /* RelayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayView.swift; sourceTree = "<group>"; };
 		A100000013 /* ProviderTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderTransport.swift; sourceTree = "<group>"; };
 		A100000015 /* DualModeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DualModeView.swift; sourceTree = "<group>"; };
+		A100000016 /* BonjourBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BonjourBrowser.swift; sourceTree = "<group>"; };
+		A100000017 /* CompositeTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompositeTransport.swift; sourceTree = "<group>"; };
 
 		/* JanusProvider source files */
 		A200000001 /* JanusProviderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusProviderApp.swift; sourceTree = "<group>"; };
@@ -73,6 +82,9 @@
 		A200000005 /* ProviderEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderEngine.swift; sourceTree = "<group>"; };
 		A200000006 /* MLXRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXRunner.swift; sourceTree = "<group>"; };
 		A200000007 /* PromptTemplates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptTemplates.swift; sourceTree = "<group>"; };
+		A200000008 /* ProviderAdvertiserTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderAdvertiserTransport.swift; sourceTree = "<group>"; };
+		A200000009 /* BonjourAdvertiser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BonjourAdvertiser.swift; sourceTree = "<group>"; };
+		A200000010 /* CompositeAdvertiser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompositeAdvertiser.swift; sourceTree = "<group>"; };
 
 		/* JanusClientTests source files */
 		A300000001 /* ClientEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClientEngineTests.swift; sourceTree = "<group>"; };
@@ -80,6 +92,8 @@
 		A300000003 /* RelayDisconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayDisconnectTests.swift; sourceTree = "<group>"; };
 		A300000004 /* DualModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DualModeTests.swift; sourceTree = "<group>"; };
 		A300000005 /* MultiProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiProviderTests.swift; sourceTree = "<group>"; };
+		A300000006 /* TCPFramingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TCPFramingTests.swift; sourceTree = "<group>"; };
+		A300000007 /* BonjourTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BonjourTransportTests.swift; sourceTree = "<group>"; };
 
 		/* Products */
 		B100000001 /* JanusClient.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JanusClient.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -144,6 +158,8 @@
 				A100000012 /* RelayView.swift */,
 				A100000013 /* ProviderTransport.swift */,
 				A100000015 /* DualModeView.swift */,
+				A100000016 /* BonjourBrowser.swift */,
+				A100000017 /* CompositeTransport.swift */,
 				A100000004 /* Info.plist */,
 			);
 			path = JanusClient;
@@ -158,6 +174,9 @@
 				A200000005 /* ProviderEngine.swift */,
 				A200000006 /* MLXRunner.swift */,
 				A200000007 /* PromptTemplates.swift */,
+				A200000008 /* ProviderAdvertiserTransport.swift */,
+				A200000009 /* BonjourAdvertiser.swift */,
+				A200000010 /* CompositeAdvertiser.swift */,
 				A200000004 /* Info.plist */,
 			);
 			path = JanusProvider;
@@ -181,6 +200,8 @@
 				A300000003 /* RelayDisconnectTests.swift */,
 				A300000004 /* DualModeTests.swift */,
 				A300000005 /* MultiProviderTests.swift */,
+				A300000006 /* TCPFramingTests.swift */,
+				A300000007 /* BonjourTransportTests.swift */,
 			);
 			path = JanusClientTests;
 			sourceTree = "<group>";
@@ -319,6 +340,8 @@
 				C100000011 /* RelayView.swift in Sources */,
 				C100000012 /* ProviderTransport.swift in Sources */,
 				C100000014 /* DualModeView.swift in Sources */,
+				C100000015 /* BonjourBrowser.swift in Sources */,
+				C100000016 /* CompositeTransport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -332,6 +355,9 @@
 				C200000004 /* ProviderEngine.swift in Sources */,
 				C200000005 /* MLXRunner.swift in Sources */,
 				C200000006 /* PromptTemplates.swift in Sources */,
+				C200000007 /* ProviderAdvertiserTransport.swift in Sources */,
+				C200000008 /* BonjourAdvertiser.swift in Sources */,
+				C200000009 /* CompositeAdvertiser.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -344,6 +370,8 @@
 				C400000003 /* RelayDisconnectTests.swift in Sources */,
 				C400000004 /* DualModeTests.swift in Sources */,
 				C400000005 /* MultiProviderTests.swift in Sources */,
+				C400000006 /* TCPFramingTests.swift in Sources */,
+				C400000007 /* BonjourTransportTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -81,7 +81,7 @@ final class DualModeTests: XCTestCase {
     func testClientEngine_acceptsLocalTransport() {
         let transport = relay.enableLocalClient()
         let engine = ClientEngine(transport: transport)
-        XCTAssertNil(engine.browserRef, "browserRef should be nil for non-MPCBrowser transport")
+        XCTAssertNil(engine.compositeRef, "compositeRef should be nil for non-CompositeTransport transport")
         XCTAssertEqual(engine.connectionState, .disconnected)
     }
 

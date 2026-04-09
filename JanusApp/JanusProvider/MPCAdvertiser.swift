@@ -7,10 +7,21 @@ import JanusShared
 /// Supports multiple simultaneous clients. Each client gets its own independent
 /// MCSession so that one client disconnecting cannot affect another.
 @MainActor
-class MPCAdvertiser: NSObject, ObservableObject {
+class MPCAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTransport {
 
     @Published var isAdvertising = false
-    @Published var connectedClients: [MCPeerID: String] = [:]  // peerID → display name
+    @Published var connectedPeers: [MCPeerID: String] = [:]  // peerID → display name
+
+    /// Protocol-conforming view of connected clients: senderID → display name.
+    var connectedClients: [String: String] {
+        var result: [String: String] = [:]
+        for (senderID, peer) in senderToPeer {
+            if let name = connectedPeers[peer] {
+                result[senderID] = name
+            }
+        }
+        return result
+    }
 
     private let serviceType = "janus-ai"
     nonisolated(unsafe) private let peerID: MCPeerID
@@ -24,8 +35,8 @@ class MPCAdvertiser: NSObject, ObservableObject {
     // Maps senderID (from MessageEnvelope) → MCPeerID for routing replies
     private var senderToPeer: [String: MCPeerID] = [:]
 
-    /// Callback for received messages from clients. Includes the sender's peer ID.
-    var onMessageReceived: ((MessageEnvelope, MCPeerID) -> Void)?
+    /// Callback for received messages from clients. String is the senderID from the envelope.
+    var onMessageReceived: ((MessageEnvelope, String) -> Void)?
 
     /// Callback when a specific client disconnects. Passes the peer's display name.
     var onClientDisconnected: ((String) -> Void)?
@@ -85,13 +96,13 @@ class MPCAdvertiser: NSObject, ObservableObject {
     }
 
     var connectedClientName: String? {
-        connectedClients.values.first
+        connectedPeers.values.first
     }
 
     /// Look up the display name for a given senderID (from MessageEnvelope).
     func displayName(forSender senderID: String) -> String? {
         guard let peer = senderToPeer[senderID] else { return nil }
-        return connectedClients[peer]
+        return connectedPeers[peer]
     }
 
     /// Check whether a senderID is currently connected.
@@ -145,15 +156,15 @@ extension MPCAdvertiser: MCSessionDelegate {
         Task { @MainActor in
             switch state {
             case .connected:
-                connectedClients[peerID] = peerID.displayName
+                connectedPeers[peerID] = peerID.displayName
                 sendServiceAnnounce(to: peerID)
-                print("Client connected: \(peerID.displayName) (total: \(connectedClients.count))")
+                print("Client connected: \(peerID.displayName) (total: \(connectedPeers.count))")
             case .notConnected:
-                if let name = connectedClients.removeValue(forKey: peerID) {
+                if let name = connectedPeers.removeValue(forKey: peerID) {
                     senderToPeer = senderToPeer.filter { $0.value != peerID }
                     clientSessions.removeValue(forKey: peerID)
                     onClientDisconnected?(name)
-                    print("Client disconnected: \(name) (total: \(connectedClients.count))")
+                    print("Client disconnected: \(name) (total: \(connectedPeers.count))")
                 }
             case .connecting:
                 break
@@ -172,7 +183,7 @@ extension MPCAdvertiser: MCSessionDelegate {
             // Ignore ping/pong
             guard envelope.type != .ping && envelope.type != .pong else { return }
 
-            onMessageReceived?(envelope, peerID)
+            onMessageReceived?(envelope, envelope.senderID)
         }
     }
 

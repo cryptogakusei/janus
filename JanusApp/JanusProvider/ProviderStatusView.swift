@@ -12,7 +12,7 @@ struct ProviderStatusView: View {
     }()
 
     @StateObject private var engine = ProviderEngine(providerID: sharedProviderID)
-    @StateObject private var advertiser = MPCAdvertiser(
+    @StateObject private var advertiser = CompositeAdvertiser(
         providerName: Host.current().localizedName ?? "Janus Provider",
         providerID: sharedProviderID
     )

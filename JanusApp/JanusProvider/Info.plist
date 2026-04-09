@@ -8,6 +8,7 @@
 	<array>
 		<string>_janus-ai._tcp</string>
 		<string>_janus-ai._udp</string>
+		<string>_janus-tcp._tcp</string>
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>

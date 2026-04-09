@@ -149,10 +149,10 @@ struct DiscoveryView: View {
 
     private var settingsMenu: some View {
         Menu {
-            if let browser = engine.browserRef {
+            if let mpcBrowser = engine.compositeRef?.mpcBrowser {
                 Toggle("Force Relay Mode", isOn: Binding(
-                    get: { browser.forceRelayMode },
-                    set: { browser.forceRelayMode = $0 }
+                    get: { mpcBrowser.forceRelayMode },
+                    set: { mpcBrowser.forceRelayMode = $0 }
                 ))
             }
             Divider()
