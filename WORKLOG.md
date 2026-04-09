@@ -1592,24 +1592,62 @@ Full prioritized list of all remaining features across relay, transport, payment
 | 15 | E2E encryption (Relay Phase 4) | Medium-Large | — | ECDH key exchange using existing ETH keypairs. Client and provider establish shared secret; relay sees only opaque bytes. Required before untrusted relays or multi-hop. |
 | 16 | Multi-hop relay + congestion control (Relay Phase 3) | Large | #15 | Messages traverse multiple relays (Client → Relay A → Relay B → Provider). Needs TTL, loop detection, route caching. Congestion control bundled here: relay must break payload opacity to track request/response pairs, manage per-client queues, enforce provider capacity limits, propagate backpressure. Major design change from current stateless forwarding. |
 | 17 | Backend session service (Vapor) | Medium | — | Real session issuance service replacing the removed DemoConfig. Adapter layer for future Tempo/MPP swap. Only needed for production multi-user. |
-| 18 | Core Bluetooth L2CAP transport | Large | — | True WiFi-less operation via BLE 5.0 L2CAP channels. ~100KB/s throughput (vs MPC's ~2MB/s). Major rewrite: custom discovery, connection management, reliable delivery. Only needed if WiFi-less operation becomes a requirement. |
+| 18 | Core Bluetooth L2CAP transport | Large | — | True WiFi-less operation via BLE 5.0 L2CAP channels. ~100KB/s throughput (vs MPC's ~2MB/s). Major rewrite: custom discovery, connection management, reliable delivery. Also serves as the bridge between Apple devices and non-Apple hardware (ESP32, RPi). |
 | 19 | Relay incentives (Relay Phase 5) | Large | #15 | Relays earn payment for forwarding. Options: flat fee per forward, percentage of inference payment, or client opens micro payment channel with relay. Requires E2E encryption so relay can't extract payment info. |
+
+#### Hardware relay & edge provider vision (#20–23)
+
+Non-Apple hardware as relay nodes and edge providers, enabling a truly infrastructure-free mesh.
+
+| # | Feature | Effort | Dependencies | Details |
+|---|---------|--------|-------------|---------|
+| 20 | ESP32 mesh relay | Large | #16, #18 | ESP32 (~$4) as dedicated relay node. Communicates with iPhones via BLE (CoreBluetooth ↔ ESP32 BLE GATT). ESP32-to-ESP32 hops use ESP-NOW (peer-to-peer WiFi without router, ~1MB/s, ~200m range). ESP-MDF (Mesh Development Framework) provides automatic route discovery and self-healing. Janus relay logic rewritten in C/Arduino — MessageEnvelope is JSON, parseable on ESP32. Solar-powered nodes could form persistent outdoor relay backbone. |
+| 21 | Raspberry Pi relay/client/provider | Medium | #8, #18 | RPi runs full Janus protocol — relay, client, or provider. Swift on Linux (SPM supports it) or Python rewrite. RPi 5 (8GB, ~$60) can run quantized LLMs via llama.cpp (~5 tok/s for 1B models). Connects via WiFi TCP (Bonjour) and/or BLE. Portable with USB-C power bank — provider in a backpack. |
+| 22 | Cross-transport relay | Medium | #8, #18 | A relay that bridges transports: receives on BLE, forwards on TCP (or vice versa). Enables heterogeneous mesh — iPhone (BLE) → ESP32 (ESP-NOW) → RPi (TCP) → Mac (TCP). Relay logic already exists (Feature #2), needs multiple transport backends per node. |
+| 23 | ESP-NOW transport (ESP32-only) | Medium | #20 | Native ESP32 peer-to-peer WiFi protocol. No router needed, ~1MB/s, ~200m range. ESP32s form a self-healing mesh. Only runs between ESP32 nodes — iPhones/Macs connect to edge ESP32s via BLE or WiFi. |
+
+**Target architectures:**
+
+```
+Solar mesh backbone:
+  Solar+ESP32 ~~ESP-NOW~~ Solar+ESP32 ~~ESP-NOW~~ Solar+ESP32
+       |                                               |
+      BLE                                             BLE
+       |                                               |
+    iPhone (client)                               Mac (provider)
+
+Edge provider (no Mac needed):
+  iPhone --WiFi/BLE-→ RPi 5 (llama.cpp, 1B model)
+
+Hybrid mesh:
+  iPhone ~~BLE~~ ESP32 ~~ESP-NOW~~ ESP32 ~~WiFi~~ RPi (provider)
+                                         ~~BLE~~ Mac (provider)
+```
+
+**Key insight:** The Janus protocol is transport-agnostic — MessageEnvelope is just JSON bytes. The `ProviderTransport` protocol abstraction enables plugging in new transports (BLE, ESP-NOW, TCP) without changing business logic, UI, or payment flows. Each transport has a sweet spot: TCP for same-LAN reliability, MPC/AWDL for zero-infrastructure single-hop, BLE for reliable multi-hop and hardware bridge, ESP-NOW for long-range ESP32 mesh.
 
 #### Dependency graph
 
 ```
 #2 (dual mode) ← #3 (auto-fallback)
 #8 (Bonjour+TCP) ← #9 (dynamic backend URL) can piggyback on same mDNS work
+#8 (Bonjour+TCP) ← #21 (RPi relay/client/provider) uses TCP transport
 #15 (E2E encryption) ← #16 (multi-hop + congestion control)
 #15 (E2E encryption) ← #19 (relay incentives)
+#16 (multi-hop) ← #20 (ESP32 mesh relay)
+#18 (BLE transport) ← #20 (ESP32 mesh relay) BLE is the iPhone↔ESP32 bridge
+#18 (BLE transport) ← #21 (RPi) BLE as alternative to TCP
+#18 (BLE transport) ← #22 (cross-transport relay)
+#20 (ESP32 mesh) ← #23 (ESP-NOW transport)
 ```
 
 #### Summary
 
-- **19 items total**: 7 small (Phase 2), 6 small-medium (polish), 6 large (long-term)
+- **23 items total**: 7 small (Phase 2), 6 small-medium (polish), 10 large (long-term)
 - **Near-term** (#1–7): finish relay robustness
 - **Medium-term** (#8–14): transport reliability + payment polish
 - **Long-term** (#15–19): mesh network with encryption, multi-hop, and incentives
+- **Hardware vision** (#20–23): ESP32 mesh backbone, RPi edge providers, cross-transport relay
 
 ---
 
