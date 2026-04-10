@@ -95,6 +95,9 @@ public struct PersistedProviderState: Codable, Sendable {
     public var requestLog: [PersistedLogEntry]
     /// Hex-encoded ETH private key for Tempo settlement signing (persisted to survive restarts).
     public var ethPrivateKeyHex: String?
+    /// Channels with unsettled vouchers, keyed by sessionID.
+    /// Persisted so the provider can settle after restart or connectivity loss.
+    public var unsettledChannels: [String: Channel]?
 
     public init(
         providerID: String,
@@ -103,7 +106,8 @@ public struct PersistedProviderState: Codable, Sendable {
         totalRequestsServed: Int = 0,
         totalCreditsEarned: Int = 0,
         requestLog: [PersistedLogEntry] = [],
-        ethPrivateKeyHex: String? = nil
+        ethPrivateKeyHex: String? = nil,
+        unsettledChannels: [String: Channel]? = nil
     ) {
         self.providerID = providerID
         self.privateKeyBase64 = privateKeyBase64
@@ -112,6 +116,7 @@ public struct PersistedProviderState: Codable, Sendable {
         self.totalCreditsEarned = totalCreditsEarned
         self.requestLog = requestLog
         self.ethPrivateKeyHex = ethPrivateKeyHex
+        self.unsettledChannels = unsettledChannels
     }
 
     /// Custom decoder: defaults new fields when missing (backwards compatibility).
@@ -124,6 +129,7 @@ public struct PersistedProviderState: Codable, Sendable {
         totalCreditsEarned = try container.decodeIfPresent(Int.self, forKey: .totalCreditsEarned) ?? 0
         requestLog = try container.decodeIfPresent([PersistedLogEntry].self, forKey: .requestLog) ?? []
         ethPrivateKeyHex = try container.decodeIfPresent(String.self, forKey: .ethPrivateKeyHex)
+        unsettledChannels = try container.decodeIfPresent([String: Channel].self, forKey: .unsettledChannels)
     }
 }
 

@@ -60,6 +60,8 @@ struct ProviderStatusView: View {
             advertiser.startAdvertising()
             Task { await engine.loadModel() }
             Task { await engine.fundProviderIfNeeded() }
+            engine.startNetworkMonitor()
+            Task { await engine.retryPendingSettlements() }
         }
     }
 

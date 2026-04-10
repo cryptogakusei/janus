@@ -266,4 +266,43 @@ final class TempoTests: XCTestCase {
         XCTAssertEqual(decoded.deposit, 500)
         XCTAssertEqual(decoded.state, .open)
     }
+
+    /// Channel with a SignedVoucher survives JSON round-trip with crypto integrity intact.
+    /// Critical for #12b — persisted channels must produce valid on-chain settlement signatures.
+    func testChannelWithVoucherCodableRoundTrip() throws {
+        let clientKP = try EthKeyPair()
+        let providerKP = try EthKeyPair()
+        let token = EthAddress(Data(repeating: 0, count: 20))
+        let salt = Keccak256.hash(Data("voucher-codable".utf8))
+
+        var channel = Channel(payer: clientKP.address, payee: providerKP.address,
+                              token: token, salt: salt, authorizedSigner: clientKP.address,
+                              deposit: 1000, config: config)
+
+        // Accept a voucher so the channel has a SignedVoucher with real ECDSA signature bytes
+        let voucher = Voucher(channelId: channel.channelId, cumulativeAmount: 300)
+        let signed = try voucher.sign(with: clientKP, config: config)
+        try channel.acceptVoucher(signed)
+
+        // Round-trip through JSON (using JanusStore's encoder for fidelity)
+        let data = try JSONEncoder.janus.encode(channel)
+        let decoded = try JSONDecoder.janus.decode(Channel.self, from: data)
+
+        // Structural equality
+        XCTAssertEqual(decoded.channelId, channel.channelId)
+        XCTAssertEqual(decoded.deposit, 1000)
+        XCTAssertEqual(decoded.authorizedAmount, 300)
+        XCTAssertEqual(decoded.unsettledAmount, 300)
+        XCTAssertNotNil(decoded.latestVoucher)
+
+        // Crypto integrity — the signature must still verify against the original signer
+        XCTAssertTrue(
+            Voucher.verify(signedVoucher: decoded.latestVoucher!, expectedSigner: clientKP.address, config: config),
+            "Voucher signature must remain valid after JSON round-trip — this is what gets submitted on-chain"
+        )
+
+        // Signature bytes must be identical (not just valid — exact match)
+        XCTAssertEqual(decoded.latestVoucher!.signatureBytes, signed.signatureBytes,
+                       "Signature bytes must be preserved exactly through serialization")
+    }
 }

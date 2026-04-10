@@ -253,6 +253,183 @@ final class SessionPersistenceRegressionTests: XCTestCase {
         XCTAssertEqual(loaded?.spendState.cumulativeSpend, 10)
     }
 
+    // MARK: - Provider state with unsettled channels (#12b)
+
+    /// Full round-trip: PersistedProviderState with an unsettled channel containing a signed voucher.
+    func testProviderStateRoundTrip_withUnsettledChannels() throws {
+        let clientKP = try EthKeyPair()
+        let providerKP = try EthKeyPair()
+        let token = EthAddress(Data(repeating: 0, count: 20))
+        let salt = Keccak256.hash(Data("persist-test".utf8))
+        let config = TempoConfig.testnet
+
+        var channel = Channel(payer: clientKP.address, payee: providerKP.address,
+                              token: token, salt: salt, authorizedSigner: clientKP.address,
+                              deposit: 1000, config: config)
+        let voucher = Voucher(channelId: channel.channelId, cumulativeAmount: 250)
+        let signed = try voucher.sign(with: clientKP, config: config)
+        try channel.acceptVoucher(signed)
+
+        let persisted = PersistedProviderState(
+            providerID: "prov-persist",
+            privateKeyBase64: JanusKeyPair().privateKeyBase64,
+            totalRequestsServed: 5,
+            totalCreditsEarned: 250,
+            unsettledChannels: ["sess-1": channel]
+        )
+
+        try store.save(persisted, as: "provider_unsettled.json")
+        let loaded = store.load(PersistedProviderState.self, from: "provider_unsettled.json")
+
+        XCTAssertNotNil(loaded)
+        XCTAssertNotNil(loaded?.unsettledChannels)
+        XCTAssertEqual(loaded?.unsettledChannels?.count, 1)
+
+        let restored = loaded?.unsettledChannels?["sess-1"]
+        XCTAssertNotNil(restored)
+        XCTAssertEqual(restored?.channelId, channel.channelId)
+        XCTAssertEqual(restored?.deposit, 1000)
+        XCTAssertEqual(restored?.unsettledAmount, 250)
+        XCTAssertEqual(restored?.authorizedAmount, 250)
+        XCTAssertNotNil(restored?.latestVoucher)
+
+        // Verify the restored voucher signature is still valid (crypto integrity)
+        XCTAssertTrue(
+            Voucher.verify(signedVoucher: restored!.latestVoucher!, expectedSigner: clientKP.address, config: config),
+            "Voucher signature must survive JSON round-trip"
+        )
+    }
+
+    /// Multiple unsettled channels all survive persist/restore.
+    func testProviderStateRoundTrip_multipleUnsettledChannels() throws {
+        let config = TempoConfig.testnet
+        let providerKP = try EthKeyPair()
+        let token = EthAddress(Data(repeating: 0, count: 20))
+        var channels: [String: Channel] = [:]
+
+        for i in 1...3 {
+            let clientKP = try EthKeyPair()
+            let salt = Keccak256.hash(Data("multi-\(i)".utf8))
+            var ch = Channel(payer: clientKP.address, payee: providerKP.address,
+                             token: token, salt: salt, authorizedSigner: clientKP.address,
+                             deposit: UInt64(i * 500), config: config)
+            let v = Voucher(channelId: ch.channelId, cumulativeAmount: UInt64(i * 100))
+            try ch.acceptVoucher(try v.sign(with: clientKP, config: config))
+            channels["sess-\(i)"] = ch
+        }
+
+        let persisted = PersistedProviderState(
+            providerID: "prov-multi",
+            privateKeyBase64: JanusKeyPair().privateKeyBase64,
+            unsettledChannels: channels
+        )
+
+        try store.save(persisted, as: "provider_multi.json")
+        let loaded = store.load(PersistedProviderState.self, from: "provider_multi.json")
+
+        XCTAssertEqual(loaded?.unsettledChannels?.count, 3)
+        for i in 1...3 {
+            let ch = loaded?.unsettledChannels?["sess-\(i)"]
+            XCTAssertNotNil(ch, "Channel sess-\(i) should be restored")
+            XCTAssertEqual(ch?.deposit, UInt64(i * 500))
+            XCTAssertEqual(ch?.unsettledAmount, UInt64(i * 100))
+        }
+    }
+
+    /// unsettledChannels is nil (not empty dict) when no channels are unsettled.
+    func testProviderStateRoundTrip_unsettledChannelsNilWhenEmpty() throws {
+        let persisted = PersistedProviderState(
+            providerID: "prov-nil",
+            privateKeyBase64: JanusKeyPair().privateKeyBase64,
+            unsettledChannels: nil
+        )
+
+        try store.save(persisted, as: "provider_nil_channels.json")
+        let loaded = store.load(PersistedProviderState.self, from: "provider_nil_channels.json")
+
+        XCTAssertNotNil(loaded)
+        XCTAssertNil(loaded?.unsettledChannels, "unsettledChannels should be nil, not empty dict")
+    }
+
+    /// Filtering: only channels with unsettledAmount > 0 should be persisted.
+    /// This mimics the logic in ProviderEngine.persistState().
+    func testProviderStatePersistsOnlyUnsettledChannels() throws {
+        let config = TempoConfig.testnet
+        let providerKP = try EthKeyPair()
+        let token = EthAddress(Data(repeating: 0, count: 20))
+
+        // Channel 1: has an unsettled voucher (should be persisted)
+        let client1 = try EthKeyPair()
+        let salt1 = Keccak256.hash(Data("filter-1".utf8))
+        var ch1 = Channel(payer: client1.address, payee: providerKP.address,
+                          token: token, salt: salt1, authorizedSigner: client1.address,
+                          deposit: 500, config: config)
+        let v1 = Voucher(channelId: ch1.channelId, cumulativeAmount: 200)
+        try ch1.acceptVoucher(try v1.sign(with: client1, config: config))
+
+        // Channel 2: fully settled (should NOT be persisted)
+        let client2 = try EthKeyPair()
+        let salt2 = Keccak256.hash(Data("filter-2".utf8))
+        var ch2 = Channel(payer: client2.address, payee: providerKP.address,
+                          token: token, salt: salt2, authorizedSigner: client2.address,
+                          deposit: 500, config: config)
+        let v2 = Voucher(channelId: ch2.channelId, cumulativeAmount: 300)
+        try ch2.acceptVoucher(try v2.sign(with: client2, config: config))
+        ch2.recordSettlement(amount: 300)
+
+        // Channel 3: no voucher at all (should NOT be persisted)
+        let client3 = try EthKeyPair()
+        let salt3 = Keccak256.hash(Data("filter-3".utf8))
+        let ch3 = Channel(payer: client3.address, payee: providerKP.address,
+                          token: token, salt: salt3, authorizedSigner: client3.address,
+                          deposit: 500, config: config)
+
+        // Apply the same filtering logic as ProviderEngine.persistState()
+        let allChannels: [String: Channel] = ["sess-1": ch1, "sess-2": ch2, "sess-3": ch3]
+        let unsettled = allChannels.filter { $0.value.latestVoucher != nil && $0.value.unsettledAmount > 0 }
+
+        let persisted = PersistedProviderState(
+            providerID: "prov-filter",
+            privateKeyBase64: JanusKeyPair().privateKeyBase64,
+            unsettledChannels: unsettled.isEmpty ? nil : unsettled
+        )
+
+        try store.save(persisted, as: "provider_filter.json")
+        let loaded = store.load(PersistedProviderState.self, from: "provider_filter.json")
+
+        XCTAssertEqual(loaded?.unsettledChannels?.count, 1, "Only the unsettled channel should be persisted")
+        XCTAssertNotNil(loaded?.unsettledChannels?["sess-1"])
+        XCTAssertNil(loaded?.unsettledChannels?["sess-2"], "Fully settled channel should be filtered out")
+        XCTAssertNil(loaded?.unsettledChannels?["sess-3"], "Channel without voucher should be filtered out")
+    }
+
+    // MARK: - Backwards compatibility: old format without unsettledChannels
+
+    /// Old provider state JSON (pre-#12b) should decode without crash.
+    func testProviderStateDecodesWithoutUnsettledChannelsField() throws {
+        let kp = JanusKeyPair()
+        let oldJson = """
+        {
+            "providerID": "prov-legacy",
+            "privateKeyBase64": "\(kp.privateKeyBase64)",
+            "receiptsIssued": [],
+            "totalRequestsServed": 10,
+            "totalCreditsEarned": 50,
+            "requestLog": []
+        }
+        """
+
+        let url = tempDir.appendingPathComponent("old_no_channels.json")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        try oldJson.data(using: .utf8)!.write(to: url)
+
+        let loaded = store.load(PersistedProviderState.self, from: "old_no_channels.json")
+        XCTAssertNotNil(loaded, "Should decode old format without unsettledChannels field")
+        XCTAssertNil(loaded?.unsettledChannels, "unsettledChannels should default to nil")
+        XCTAssertEqual(loaded?.totalRequestsServed, 10)
+        XCTAssertEqual(loaded?.totalCreditsEarned, 50)
+    }
+
     func testProviderStateDecodesWithoutEthKeyField() throws {
         let kp = JanusKeyPair()
         let oldJson = """

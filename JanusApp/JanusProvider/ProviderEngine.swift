@@ -1,7 +1,9 @@
+import AppKit
 import Foundation
 import JanusShared
 import MLXLMCommon
 import MLXLLM
+import Network
 import os.log
 
 private let smokeLog = OSLog(subsystem: "com.janus.provider", category: "SmokeTest")
@@ -120,6 +122,9 @@ class ProviderEngine: ObservableObject {
     private let tempoConfig = TempoConfig.testnet
     /// Provider's Ethereum keypair (for Tempo address identity).
     private(set) var providerEthKeyPair: EthKeyPair?
+    private var isSettling = false
+    private var networkMonitor: NWPathMonitor?
+    private var lastPathStatus: NWPath.Status = .satisfied
 
     /// Callback to send messages back to a specific client via MPC.
     /// The String parameter is the sender/session ID for routing.
@@ -147,6 +152,12 @@ class ProviderEngine: ObservableObject {
                 LogEntry(timestamp: entry.timestamp, taskType: entry.taskType,
                          promptPreview: entry.promptPreview, responsePreview: entry.responsePreview,
                          credits: entry.credits, isError: entry.isError, sessionID: entry.sessionID)
+            }
+            // Restore unsettled channels (survive restart for offline settlement)
+            if let unsettled = persisted.unsettledChannels, !unsettled.isEmpty {
+                self.channels = unsettled
+                self.activeSessionCount = unsettled.count
+                print("Restored \(unsettled.count) unsettled channel(s) from previous session")
             }
             print("Restored provider state: \(persisted.totalRequestsServed) served")
         } else {
@@ -182,6 +193,14 @@ class ProviderEngine: ObservableObject {
             }
             persistState()
         }
+
+        // Persist unsettled channels on app termination (safety net — primary persistence is per-voucher)
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.persistState() }
+        }
     }
 
     /// Provider's public key base64 for ServiceAnnounce.
@@ -208,15 +227,53 @@ class ProviderEngine: ObservableObject {
         await settleAllChannelsOnChain()
     }
 
+    /// Retry settlement for any persisted unsettled channels (called on startup and network restore).
+    func retryPendingSettlements() async {
+        let unsettledCount = channels.filter { $0.value.unsettledAmount > 0 }.count
+        guard unsettledCount > 0 else { return }
+        print("Retrying settlement for \(unsettledCount) persisted channel(s)...")
+        await settleAllChannelsOnChain(isRetry: true)
+    }
+
+    /// Start monitoring network connectivity. Retries pending settlements when internet returns.
+    func startNetworkMonitor() {
+        guard networkMonitor == nil else { return }  // prevent double-init
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let wasUnsatisfied = self.lastPathStatus != .satisfied
+                self.lastPathStatus = path.status
+                if wasUnsatisfied && path.status == .satisfied {
+                    print("Network restored — retrying pending settlements...")
+                    await self.retryPendingSettlements()
+                }
+            }
+        }
+        monitor.start(queue: DispatchQueue.global(qos: .utility))
+        self.networkMonitor = monitor
+    }
+
+    deinit {
+        networkMonitor?.cancel()
+    }
+
     /// Settle all Tempo channels on-chain that have unsettled vouchers.
-    /// Retries channels that don't exist on-chain yet (client may still be opening them).
-    private func settleAllChannelsOnChain() async {
+    /// - Parameter isRetry: true when retrying persisted channels from a previous session (skips faucet/wait).
+    private func settleAllChannelsOnChain(isRetry: Bool = false) async {
+        // Concurrent settlement guard — isSettling is safe as plain Bool because @MainActor serializes access
+        guard !isSettling else { print("Settlement already in progress, skipping"); return }
+        isSettling = true
+        defer { isSettling = false }
+
         guard let ethKP = providerEthKeyPair, let rpcURL = tempoConfig.rpcURL else { return }
 
-        // Ensure provider has gas funds before attempting settlement
         let rpc = EthRPC(rpcURL: rpcURL)
-        try? await rpc.fundAddress(ethKP.address)
-        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        if !isRetry {
+            // Ensure provider has gas funds before attempting settlement (skip on retry — already funded on startup)
+            try? await rpc.fundAddress(ethKP.address)
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+        }
 
         let settler = ChannelSettler(config: tempoConfig)
         var pendingChannels: [(String, Channel)] = []
@@ -228,6 +285,7 @@ class ProviderEngine: ObservableObject {
             switch result {
             case .settled(let txHash, let amount):
                 channels[sessionID]?.recordSettlement(amount: amount)
+                removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId, onlyIfSettled: true)
                 print("On-chain settlement: session \(sessionID.prefix(8))... amount=\(amount) tx=\(txHash.prefix(18))...")
                 os_log("SETTLEMENT_TX=%{public}@", log: smokeLog, type: .default, txHash)
                 os_log("SETTLEMENT_AMOUNT=%{public}d", log: smokeLog, type: .default, amount)
@@ -240,13 +298,25 @@ class ProviderEngine: ObservableObject {
             case .noVoucher:
                 break
             case .alreadySettled:
+                removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
                 print("Channel \(sessionID.prefix(8))... already settled on-chain")
             case .failed(let reason):
                 if reason.contains("does not exist on-chain") {
-                    // Channel may still be opening — queue for retry
-                    pendingChannels.append((sessionID, channel))
-                    print("Channel \(sessionID.prefix(8))... not yet on-chain, will retry...")
+                    if isRetry {
+                        // Persisted channel from previous session — client is gone, channel was never opened
+                        removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
+                        print("Channel \(sessionID.prefix(8))... not on-chain (stale) — removed")
+                    } else {
+                        // Client may still be opening — queue for 20s retry
+                        pendingChannels.append((sessionID, channel))
+                        print("Channel \(sessionID.prefix(8))... not yet on-chain, will retry...")
+                    }
+                } else if reason.contains("finalized") {
+                    // Channel closed/expired on-chain — permanent failure
+                    removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
+                    print("Channel \(sessionID.prefix(8))... finalized on-chain — removed")
                 } else {
+                    // Transient failure (network error, etc.) — keep for future retry via NWPathMonitor
                     print("On-chain settlement failed for \(sessionID.prefix(8))...: \(reason)")
                     os_log("SETTLEMENT_FAILED=%{public}@", log: smokeLog, type: .default, reason)
                     appendLog(LogEntry(
@@ -258,7 +328,7 @@ class ProviderEngine: ObservableObject {
             }
         }
 
-        // Retry pending channels after waiting for on-chain opening
+        // Retry pending channels after waiting for on-chain opening (disconnect path only)
         // Client needs ~15s total: 3s faucet wait + approve tx + open tx
         if !pendingChannels.isEmpty {
             print("Waiting 20s for \(pendingChannels.count) channel(s) to appear on-chain...")
@@ -268,6 +338,7 @@ class ProviderEngine: ObservableObject {
                 switch result {
                 case .settled(let txHash, let amount):
                     channels[sessionID]?.recordSettlement(amount: amount)
+                    removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId, onlyIfSettled: true)
                     print("On-chain settlement (retry): session \(sessionID.prefix(8))... amount=\(amount)")
                     os_log("SETTLEMENT_TX=%{public}@", log: smokeLog, type: .default, txHash)
                     os_log("SETTLEMENT_AMOUNT=%{public}d", log: smokeLog, type: .default, amount)
@@ -278,7 +349,9 @@ class ProviderEngine: ObservableObject {
                         credits: Int(amount), isError: false, sessionID: sessionID
                     ))
                 case .noVoucher, .alreadySettled:
-                    break
+                    if case .alreadySettled = result {
+                        removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
+                    }
                 case .failed(let reason):
                     print("On-chain settlement failed (retry) for \(sessionID.prefix(8))...: \(reason)")
                     os_log("SETTLEMENT_FAILED=%{public}@", log: smokeLog, type: .default, reason)
@@ -290,6 +363,16 @@ class ProviderEngine: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Remove a channel only if its channelId still matches (guards against a reconnected client replacing the channel).
+    private func removeChannelIfMatch(sessionID: String, expectedChannelId: Data, onlyIfSettled: Bool = false) {
+        guard channels[sessionID]?.channelId == expectedChannelId else { return }
+        if onlyIfSettled {
+            guard channels[sessionID]?.unsettledAmount == 0 else { return }
+        }
+        channels.removeValue(forKey: sessionID)
+        persistState()
     }
 
     // MARK: - Model loading
@@ -460,6 +543,7 @@ class ProviderEngine: ObservableObject {
         // Accept voucher into channel state
         do {
             try channels[sessionID]?.acceptVoucher(auth.signedVoucher)
+            persistState()  // Critical: persist immediately — this voucher is real money owed
         } catch {
             sendError(requestID: auth.requestID, sessionID: sessionID,
                       code: .invalidSignature, message: "Channel rejected voucher: \(error)")
@@ -623,6 +707,7 @@ class ProviderEngine: ObservableObject {
                               promptPreview: entry.promptPreview, responsePreview: entry.responsePreview,
                               credits: entry.credits, isError: entry.isError, sessionID: entry.sessionID)
         }
+        let unsettled = channels.filter { $0.value.latestVoucher != nil && $0.value.unsettledAmount > 0 }
         let state = PersistedProviderState(
             providerID: providerID,
             privateKeyBase64: providerKeyPair.privateKeyBase64,
@@ -630,11 +715,12 @@ class ProviderEngine: ObservableObject {
             totalRequestsServed: totalRequestsServed,
             totalCreditsEarned: totalCreditsEarned,
             requestLog: logEntries,
-            ethPrivateKeyHex: providerEthKeyPair?.privateKeyData.ethHexPrefixed
+            ethPrivateKeyHex: providerEthKeyPair?.privateKeyData.ethHexPrefixed,
+            unsettledChannels: unsettled.isEmpty ? nil : unsettled
         )
         do {
             try store.save(state, as: Self.filename)
-            print("Provider state persisted: \(channels.count) channels, \(totalRequestsServed) served")
+            print("Provider state persisted: \(channels.count) channels (\(unsettled.count) unsettled), \(totalRequestsServed) served")
         } catch {
             print("Failed to persist provider state: \(error)")
         }
