@@ -52,6 +52,7 @@ class ClientEngine: ObservableObject {
     var pendingTaskType: TaskType?
     var pendingPromptText: String?
     private var requestTimeoutTask: Task<Void, Never>?
+    private var sessionCreationGeneration = 0
 
     /// Optional wallet provider injected from Privy auth.
     /// When set, SessionManager uses it for voucher signing and on-chain ops.
@@ -154,6 +155,10 @@ class ClientEngine: ObservableObject {
     /// Create or restore a session for the connected provider.
     /// Tries to restore a persisted session first; creates a new one via backend API if none found.
     func createSession(providerID: String) {
+        sessionReady = false
+        sessionCreationGeneration += 1
+        let expectedGeneration = sessionCreationGeneration
+
         if let restored = SessionManager.restore(providerID: providerID, walletProvider: walletProvider) {
             sessionManager = restored
             responseHistory = restored.history
@@ -170,6 +175,11 @@ class ClientEngine: ObservableObject {
             // Request grant from backend (async)
             Task {
                 let manager = await SessionManager.create(providerID: providerID, walletProvider: walletProvider)
+                // Discard if a newer createSession() has been called (rapid provider switching)
+                guard sessionCreationGeneration == expectedGeneration else {
+                    print("Discarding stale session creation for \(providerID.prefix(8))...")
+                    return
+                }
                 // Set up Tempo channel if provider supports it
                 if let ethAddr = connectedProvider?.providerEthAddress, !ethAddr.isEmpty {
                     manager.setupTempoChannel(providerEthAddress: ethAddr)
@@ -185,6 +195,12 @@ class ClientEngine: ObservableObject {
     func submitRequest(taskType: TaskType, promptText: String, parameters: PromptRequest.Parameters) {
         guard let session = sessionManager else {
             errorMessage = "No active session"
+            requestState = .error
+            return
+        }
+
+        guard sessionReady else {
+            errorMessage = "Session is being set up. Please wait."
             requestState = .error
             return
         }

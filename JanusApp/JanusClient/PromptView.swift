@@ -20,8 +20,10 @@ struct PromptView: View {
             VStack(spacing: 20) {
                 balanceBar
 
-                if engine.disconnectedDuringRequest || engine.connectedProvider == nil {
+                if engine.disconnectedDuringRequest {
                     disconnectedBanner
+                } else if !engine.sessionReady {
+                    reconnectingBanner
                 }
 
                 taskPicker
@@ -49,17 +51,6 @@ struct PromptView: View {
             .padding()
         }
         .scrollDismissesKeyboard(.interactively)
-        .onChange(of: engine.connectedProvider == nil) { disconnected in
-            // If provider disappears while on this screen and no active request,
-            // pop back to discovery after a short delay
-            if disconnected && engine.requestState != .waitingForQuote && engine.requestState != .waitingForResponse {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    if engine.connectedProvider == nil {
-                        dismiss()
-                    }
-                }
-            }
-        }
     }
 
     // MARK: - Subviews
@@ -112,6 +103,27 @@ struct PromptView: View {
             Spacer()
             Button("Back") { dismiss() }
                 .font(.subheadline.bold())
+        }
+        .padding()
+        .background(.orange.opacity(0.15))
+        .cornerRadius(10)
+    }
+
+    private var reconnectingBanner: some View {
+        HStack {
+            if engine.connectedProvider != nil {
+                ProgressView()
+                    .scaleEffect(0.7)
+                Text("Setting up session...")
+                    .font(.subheadline)
+            } else {
+                Image(systemName: "wifi.slash")
+                Text("Reconnecting to provider...")
+                    .font(.subheadline)
+                Spacer()
+                Button("Back") { dismiss() }
+                    .font(.subheadline.bold())
+            }
         }
         .padding()
         .background(.orange.opacity(0.15))
@@ -185,7 +197,7 @@ struct PromptView: View {
         !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         && (engine.requestState == .idle || engine.requestState == .complete || engine.requestState == .error)
         && engine.canAffordRequest
-        && engine.connectedProvider != nil
+        && engine.sessionReady
     }
 
     private var statusSection: some View {
@@ -316,7 +328,9 @@ struct PromptView: View {
 
         engine.submitRequest(taskType: selectedTask, promptText: fullPrompt, parameters: params)
 
-        // Clear prompt on submit for quick next entry
-        promptText = ""
+        // Clear prompt on submit for quick next entry (preserve if guard rejected)
+        if engine.requestState != .error {
+            promptText = ""
+        }
     }
 }
