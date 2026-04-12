@@ -1982,3 +1982,44 @@ Plan reviewed by both `systems-architect` and `architecture-reviewer` agents. Ke
 - Add retry with re-signing in `ChannelSettler` (fresh signature = different R/S values)
 
 **Status:** Tabled for later investigation. Monitor frequency in future testing sessions.
+
+---
+
+### Follow-up B: Type-Safe SettleResult (Follow-up from #12b)
+
+Replaced `SettleResult.failed(String)` with `SettleFailureReason` enum — eliminates fragile `reason.contains("finalized")` string matching in `ProviderEngine`.
+
+#### What was built
+
+- **`SettleFailureReason` enum** — 5 cases: `channelNotOnChain`, `channelFinalized`, `gasInfoUnavailable(String)`, `transactionReverted(txHash: String)`, `submissionFailed(String)`
+- **`isPermanent` computed property** — `channelFinalized` and `transactionReverted` are permanent; others transient
+- **`CustomStringConvertible`** — for safe string interpolation in logs
+- **ProviderEngine first loop** — `if case .channelNotOnChain = reason` + `reason.isPermanent` replaces string matching
+- **ProviderEngine retry loop** — now removes channels on permanent failures and `channelNotOnChain` after 20s grace period (previously just logged)
+- **2 new unit tests** — `testSettleFailureReason_isPermanent`, `testSettleFailureReason_description`
+
+#### Plan doc: `docs/plans/12b-type-safe-settle-result.md`
+
+---
+
+### Follow-up C: Provider UI — Pending Settlement Indicator (Follow-up from #12b)
+
+Shows the provider operator how many credits are pending on-chain settlement.
+
+#### What was built
+
+- **`channels` `didSet`** — `objectWillChange.send()` ensures SwiftUI re-renders when channels change (fixes stale-UI bug identified by both reviewers)
+- **`pendingSettlementCredits` computed property** — sums `unsettledAmount` across all channels
+- **`isSettling` → `@Published`** — enables "Settling..." status pill during active settlement
+- **Always-visible "Pending" stat** — 5th item in stats strip, shows "0" in gray when clean, orange when credits pending (no layout shift)
+- **Settlement status pill** — "Settling..." (orange, rotating arrows) during active settlement, "Pending" (orange, clock) when unsettled credits exist
+
+#### Manual device testing (2026-04-12)
+
+| Test | Result |
+|------|--------|
+| Send requests, disconnect (online) | "Pending" flashes briefly, settlement succeeds, returns to 0 |
+| Turn off WiFi → disconnect client → settlement fails | "Pending" turns orange with credit count |
+| Turn WiFi back on → settlement retries | "Settling..." pill appears → "Pending" clears to 0 |
+
+#### Plan doc: `docs/plans/12b-pending-settlement-indicator.md`

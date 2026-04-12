@@ -118,6 +118,11 @@ class ProviderEngine: ObservableObject {
             .sorted { ($0.lastActive ?? .distantPast) > ($1.lastActive ?? .distantPast) }
     }
 
+    /// Total credits pending on-chain settlement (unsettled vouchers across all channels).
+    var pendingSettlementCredits: Int {
+        channels.values.reduce(0) { $0 + Int($1.unsettledAmount) }
+    }
+
     let providerID: String
     let providerKeyPair: JanusKeyPair
     private let mlxRunner: MLXRunner
@@ -129,12 +134,14 @@ class ProviderEngine: ObservableObject {
     private var lastResponses: [String: InferenceResponse] = [:]
 
     // Tempo voucher path
-    private var channels: [String: Channel] = [:]           // sessionID → Channel
+    private var channels: [String: Channel] = [:] {         // sessionID → Channel
+        didSet { objectWillChange.send() }
+    }
     private var voucherVerifier: VoucherVerifier?
     private let tempoConfig = TempoConfig.testnet
     /// Provider's Ethereum keypair (for Tempo address identity).
     private(set) var providerEthKeyPair: EthKeyPair?
-    private var isSettling = false
+    @Published private(set) var isSettling = false
     private var networkMonitor: NWPathMonitor?
     private var lastPathStatus: NWPath.Status = .satisfied
 

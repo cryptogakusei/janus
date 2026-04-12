@@ -109,6 +109,11 @@ struct ProviderStatusView: View {
                 color: engine.activeSessionCount > 0 ? .green : .gray,
                 label: engine.activeSessionCount > 0 ? "Active" : "Idle"
             )
+            if engine.isSettling {
+                statusPill(icon: "arrow.triangle.2.circlepath", color: .orange, label: "Settling...")
+            } else if engine.pendingSettlementCredits > 0 {
+                statusPill(icon: "clock.arrow.circlepath", color: .orange, label: "Pending")
+            }
         }
     }
 
@@ -146,16 +151,23 @@ struct ProviderStatusView: View {
             statItem(value: "\(advertiser.connectedClients.count)", label: "Connected")
             Divider().frame(height: 28)
             statItem(value: "\(engine.activeSessionCount)", label: "Sessions")
+            Divider().frame(height: 28)
+            statItem(
+                value: "\(engine.pendingSettlementCredits)",
+                label: "Pending",
+                valueColor: engine.pendingSettlementCredits > 0 ? .orange : .secondary
+            )
         }
         .padding(.vertical, 10)
         .background(.gray.opacity(0.05))
         .cornerRadius(10)
     }
 
-    private func statItem(value: String, label: String) -> some View {
+    private func statItem(value: String, label: String, valueColor: Color = .primary) -> some View {
         VStack(spacing: 2) {
             Text(value)
                 .font(.title3.bold().monospacedDigit())
+                .foregroundStyle(valueColor)
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
