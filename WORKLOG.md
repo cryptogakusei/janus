@@ -2051,3 +2051,46 @@ Shows the provider operator how many credits are pending on-chain settlement.
 | Connect iPhone → send requests → disconnect → reconnect → send request | 1 client card (was 2 before fix) |
 
 #### Plan doc: `docs/plans/fix-duplicate-client-cards.md`
+
+---
+
+### Fix #12a: First-Query Race Condition on Provider Switch
+
+**Problem:** When user is on PromptView and the provider connection transitions (disconnect → reconnect to different provider), the submit button was enabled before the new session was ready. Submitting during this window sent the old provider's stale session credentials to the new provider → "Unknown session" error.
+
+**Root cause:** `PromptView.canSubmit` checked `connectedProvider != nil` (transport state) instead of `sessionReady` (session state). `connectedProvider` becomes non-nil immediately on transport connect, before `sessionManager` is updated for the new provider.
+
+**What was fixed:**
+
+- **`canSubmit` gates on `sessionReady`** — strict superset of `connectedProvider != nil`, only true after session is fully configured for the current provider
+- **Generation counter in `createSession()`** — prevents stale async session-creation Tasks from overwriting current state on rapid provider switching (A→B→C). Captures generation before async work, discards result if counter has moved on.
+- **`sessionReady = false` at top of `createSession()`** — explicit invariant, not reliant on disconnect handler running first
+- **Defense-in-depth guard in `submitRequest()`** — catches any bypass of the UI gate
+- **Unified tri-state banner** — replaced separate `disconnectedBanner` + `onChange` auto-dismiss with single prioritized banner: (1) disconnect-during-request, (2) reconnecting, (3) setting up session
+- **Deferred `promptText` clearing** — only clears after confirming request wasn't rejected by guard
+
+#### Manual device testing (2026-04-12)
+
+| Test | Result |
+|------|--------|
+| Connect to Provider 1 → PromptView → send request → force-quit Provider 1 → auto-switch to Provider 2 → submit | Seamless switch, request served by Provider 2 |
+| Disconnect all providers while on PromptView | "Provider disconnected" banner with Back button, submit disabled |
+
+#### Plan doc: `docs/plans/12a-fix-first-query-race.md`
+
+---
+
+### Bonjour Listener Retry Fix
+
+**Problem:** When running the provider on MacBook Air, `NWListener` failed with `-65555: NoAuth` (Local Network permission not granted by macOS). The `stateUpdateHandler` `.failed` case immediately called `startAdvertising()` with no delay or retry limit → infinite loop burning through thousands of ports in seconds.
+
+**Root cause:** macOS Local Network permission (`tccd`) was in a stale state on the Air — toggling the permission in System Settings had no effect. Required a full system restart to clear.
+
+**What was fixed:**
+
+- **5-second retry delay** — `Task.sleep` between retries prevents port exhaustion
+- **Max 5 retries** — stops retrying after persistent failures, logs "Check Local Network permission in System Settings"
+- **Cancellable retry** — stored `retryTask` handle, cancelled in `stopAdvertising()` to prevent ghost restarts
+- **Reset on success** — retry counter resets when listener reaches `.ready` state
+
+**Debugging journey:** Provider UI showed "Advertising" (green) but `dns-sd -B _janus-tcp._tcp` on other machines couldn't see the Air's service. Confirmed firewall was disabled, both Macs on same WiFi, Air could see Pro's service but not its own. Running from Xcode console revealed the NoAuth loop. System restart cleared the stale permission state.
