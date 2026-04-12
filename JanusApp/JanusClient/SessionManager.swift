@@ -42,6 +42,38 @@ class SessionManager: ObservableObject {
     /// On-chain channel status.
     @Published var channelOnChainStatus: String = ""
 
+    // MARK: - Stable device identity
+
+    private static var _cachedIdentity: JanusKeyPair?
+
+    /// Stable device identity — persisted independently of session state.
+    /// Cached in memory after first load to avoid disk I/O on every request.
+    static func deviceIdentityKey(store: JanusStore = .appDefault) -> JanusKeyPair {
+        if let cached = _cachedIdentity { return cached }
+        let filename = "client_device_identity.json"
+        if let data = store.load(DeviceIdentity.self, from: filename),
+           let rawData = Data(base64Encoded: data.privateKeyBase64),
+           let kp = try? JanusKeyPair(privateKeyRaw: rawData) {
+            _cachedIdentity = kp
+            return kp
+        }
+        // Create new identity (first launch or corrupted file)
+        let kp = JanusKeyPair()
+        try? store.save(DeviceIdentity(privateKeyBase64: kp.privateKeyBase64), as: filename)
+        _cachedIdentity = kp
+        return kp
+    }
+
+    /// Clear the persisted device identity (e.g., for device transfer or privacy reset).
+    static func clearDeviceIdentity(store: JanusStore = .appDefault) {
+        store.delete("client_device_identity.json")
+        _cachedIdentity = nil
+    }
+
+    private struct DeviceIdentity: Codable {
+        let privateKeyBase64: String
+    }
+
     /// Per-provider session filename so switching providers doesn't overwrite sessions.
     private static func filename(for providerID: String) -> String {
         "client_session_\(providerID).json"

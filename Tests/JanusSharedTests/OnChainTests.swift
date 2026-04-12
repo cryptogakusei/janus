@@ -625,7 +625,7 @@ final class OnChainTests: XCTestCase {
         case .alreadySettled:
             XCTFail("Should not be already settled")
         case .failed(let reason):
-            XCTFail("Settlement failed: \(reason)")
+            XCTFail("Settlement failed: \(reason.description)")
         }
     }
 
@@ -646,6 +646,23 @@ final class OnChainTests: XCTestCase {
 
         // 4 + 5×32 = 164 bytes
         XCTAssertEqual(calldata.count, 164)
+    }
+    // MARK: - SettleFailureReason unit tests
+
+    func testSettleFailureReason_isPermanent() {
+        XCTAssertFalse(ChannelSettler.SettleFailureReason.channelNotOnChain.isPermanent)
+        XCTAssertTrue(ChannelSettler.SettleFailureReason.channelFinalized.isPermanent)
+        XCTAssertFalse(ChannelSettler.SettleFailureReason.gasInfoUnavailable("timeout").isPermanent)
+        XCTAssertTrue(ChannelSettler.SettleFailureReason.transactionReverted(txHash: "0xabc").isPermanent)
+        XCTAssertFalse(ChannelSettler.SettleFailureReason.submissionFailed("decode error").isPermanent)
+    }
+
+    func testSettleFailureReason_description() {
+        XCTAssertEqual(ChannelSettler.SettleFailureReason.channelNotOnChain.description, "Channel does not exist on-chain")
+        XCTAssertEqual(ChannelSettler.SettleFailureReason.channelFinalized.description, "Channel is finalized")
+        XCTAssertTrue(ChannelSettler.SettleFailureReason.gasInfoUnavailable("timeout").description.contains("timeout"))
+        XCTAssertTrue(ChannelSettler.SettleFailureReason.transactionReverted(txHash: "0xabc").description.contains("0xabc"))
+        XCTAssertTrue(ChannelSettler.SettleFailureReason.submissionFailed("RPC error").description.contains("RPC error"))
     }
 }
 

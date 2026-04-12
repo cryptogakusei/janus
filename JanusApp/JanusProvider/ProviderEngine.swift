@@ -57,7 +57,8 @@ class ProviderEngine: ObservableObject {
 
     /// Per-client summary for the provider dashboard UI.
     struct ClientSummary: Identifiable {
-        let id: String  // senderID
+        let id: String          // stable identity (pubkey) or fallback senderID
+        var senderIDs: [String] // all transport-level senderIDs for this identity
         var sessionIDs: [String]
         var totalCreditsUsed: Int
         var maxCredits: Int
@@ -67,15 +68,20 @@ class ProviderEngine: ObservableObject {
         var logs: [LogEntry]
     }
 
-    /// Computes per-client summaries by grouping channels by senderID.
+    /// Computes per-client summaries by grouping sessions by stable device identity.
+    /// Falls back to senderID for clients that don't send `clientIdentity`.
     var clientSummaries: [ClientSummary] {
         var summaries: [String: ClientSummary] = [:]
+        var senderIDSets: [String: Set<String>] = [:]
 
         for (sessionID, senderID) in sessionToSender {
+            // Use stable identity if available, fall back to senderID
+            let identity = sessionToIdentity[sessionID] ?? senderID
             let channel = channels[sessionID]
 
-            var summary = summaries[senderID] ?? ClientSummary(
-                id: senderID,
+            var summary = summaries[identity] ?? ClientSummary(
+                id: identity,
+                senderIDs: [],
                 sessionIDs: [],
                 totalCreditsUsed: 0,
                 maxCredits: 0,
@@ -84,6 +90,7 @@ class ProviderEngine: ObservableObject {
                 lastActive: nil,
                 logs: []
             )
+            senderIDSets[identity, default: []].insert(senderID)
             summary.sessionIDs.append(sessionID)
             summary.totalCreditsUsed += Int(channel?.authorizedAmount ?? 0)
             summary.maxCredits += Int(channel?.deposit ?? 0)
@@ -97,7 +104,12 @@ class ProviderEngine: ObservableObject {
                     summary.lastActive = latest
                 }
             }
-            summaries[senderID] = summary
+            summaries[identity] = summary
+        }
+
+        // Convert senderID sets to arrays
+        for (identity, senderSet) in senderIDSets {
+            summaries[identity]?.senderIDs = Array(senderSet)
         }
 
         // Sort logs within each summary (newest first) and return sorted by last active
@@ -132,6 +144,8 @@ class ProviderEngine: ObservableObject {
 
     // Maps sessionID → senderID for routing replies to the correct client
     private var sessionToSender: [String: String] = [:]
+    /// Maps sessionID → stable client identity (device pubkey base64) for UI grouping.
+    private var sessionToIdentity: [String: String] = [:]
 
     private static let filename = "provider_state.json"
 
@@ -301,9 +315,9 @@ class ProviderEngine: ObservableObject {
                 removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
                 print("Channel \(sessionID.prefix(8))... already settled on-chain")
             case .failed(let reason):
-                if reason.contains("does not exist on-chain") {
+                if case .channelNotOnChain = reason {
                     if isRetry {
-                        // Persisted channel from previous session — client is gone, channel was never opened
+                        // Persisted channel from previous session — client is gone
                         removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
                         print("Channel \(sessionID.prefix(8))... not on-chain (stale) — removed")
                     } else {
@@ -311,14 +325,13 @@ class ProviderEngine: ObservableObject {
                         pendingChannels.append((sessionID, channel))
                         print("Channel \(sessionID.prefix(8))... not yet on-chain, will retry...")
                     }
-                } else if reason.contains("finalized") {
-                    // Channel closed/expired on-chain — permanent failure
+                } else if reason.isPermanent {
                     removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
-                    print("Channel \(sessionID.prefix(8))... finalized on-chain — removed")
+                    print("Channel \(sessionID.prefix(8))... \(reason) — removed")
                 } else {
                     // Transient failure (network error, etc.) — keep for future retry via NWPathMonitor
                     print("On-chain settlement failed for \(sessionID.prefix(8))...: \(reason)")
-                    os_log("SETTLEMENT_FAILED=%{public}@", log: smokeLog, type: .default, reason)
+                    os_log("SETTLEMENT_FAILED=%{public}@", log: smokeLog, type: .default, reason.description)
                     appendLog(LogEntry(
                         timestamp: Date(), taskType: "on-chain-settlement",
                         promptPreview: "On-chain settlement failed: \(reason)",
@@ -353,8 +366,17 @@ class ProviderEngine: ObservableObject {
                         removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
                     }
                 case .failed(let reason):
-                    print("On-chain settlement failed (retry) for \(sessionID.prefix(8))...: \(reason)")
-                    os_log("SETTLEMENT_FAILED=%{public}@", log: smokeLog, type: .default, reason)
+                    // After 20s grace period, channelNotOnChain is effectively permanent
+                    var shouldRemove = reason.isPermanent
+                    if case .channelNotOnChain = reason { shouldRemove = true }
+
+                    if shouldRemove {
+                        removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
+                        print("On-chain settlement permanently failed (retry) for \(sessionID.prefix(8))...: \(reason)")
+                    } else {
+                        print("On-chain settlement failed (retry) for \(sessionID.prefix(8))...: \(reason)")
+                    }
+                    os_log("SETTLEMENT_FAILED=%{public}@", log: smokeLog, type: .default, reason.description)
                     appendLog(LogEntry(
                         timestamp: Date(), taskType: "on-chain-settlement",
                         promptPreview: "On-chain settlement failed: \(reason)",
@@ -366,12 +388,14 @@ class ProviderEngine: ObservableObject {
     }
 
     /// Remove a channel only if its channelId still matches (guards against a reconnected client replacing the channel).
+    /// Also prunes sessionToIdentity (UI grouping). Does NOT prune sessionToSender — it's needed for send() routing.
     private func removeChannelIfMatch(sessionID: String, expectedChannelId: Data, onlyIfSettled: Bool = false) {
         guard channels[sessionID]?.channelId == expectedChannelId else { return }
         if onlyIfSettled {
             guard channels[sessionID]?.unsettledAmount == 0 else { return }
         }
         channels.removeValue(forKey: sessionID)
+        sessionToIdentity.removeValue(forKey: sessionID)
         persistState()
     }
 
@@ -416,6 +440,11 @@ class ProviderEngine: ObservableObject {
 
         // Track sender for routing replies back to the correct client
         sessionToSender[request.sessionID] = senderID
+
+        // Track stable device identity for UI grouping (falls back to senderID if absent)
+        if let identity = request.clientIdentity {
+            sessionToIdentity[request.sessionID] = identity
+        }
 
         // Cache the request for later lookup during VoucherAuthorization
         cacheRequest(request)

@@ -207,7 +207,8 @@ class ClientEngine: ObservableObject {
             promptText: promptText,
             parameters: parameters,
             sessionGrant: nil,
-            channelInfo: channelInfo
+            channelInfo: channelInfo,
+            clientIdentity: SessionManager.deviceIdentityKey().publicKeyBase64
         )
 
         do {

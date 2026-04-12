@@ -189,10 +189,10 @@ struct ProviderStatusView: View {
     }
 
     private func clientCard(_ client: ProviderEngine.ClientSummary) -> some View {
-        let deviceName = advertiser.displayName(forSender: client.id)
+        let deviceName = advertiser.displayName(forSenderIDs: client.senderIDs)
         let shortID = String(client.id.suffix(6))
         let name = deviceName.map { "\($0) (\(shortID))" } ?? "Client \(shortID)"
-        let connected = advertiser.isConnected(senderID: client.id)
+        let connected = advertiser.isConnected(senderIDs: client.senderIDs)
         let remaining = client.maxCredits - client.totalCreditsUsed
 
         return VStack(alignment: .leading, spacing: 5) {

@@ -1863,3 +1863,122 @@ Plan reviewed by both `systems-architect` and `architecture-reviewer` agents bef
 Sessions `CA178301` and `AC4BD01D` show continuous cumulative spend progression (3→6→9→...→27) across app restarts, confirming the same channel was reused — ethKeyPair properly restored from persisted data.
 
 #### Status: Feature #12a COMPLETE
+
+---
+
+## 2026-04-11
+
+### Feature #12b: Provider-Side Offline Settlement Resilience (commit d155091)
+
+Completes the offline-first story on the provider side. Unsettled vouchers are now persisted to disk so they survive app restarts. `NWPathMonitor` retries settlement when internet returns.
+
+#### What was built
+
+- **`PersistedProviderState.unsettledChannels`** — `[String: Channel]?` field, backward compat via `decodeIfPresent`
+- **Per-voucher persistence** — `persistState()` called immediately after `acceptVoucher()` (critical write — real money)
+- **`removeChannelIfMatch()`** — channelId-safe removal guard (prevents removing a replaced live channel)
+- **`settleAllChannelsOnChain(isRetry:)`** — `isRetry` parameter skips faucet/sleep/pending-channel wait for persisted channels
+- **`retryPendingSettlements()`** — filters channels with `unsettledAmount > 0`, calls settlement with `isRetry: true`
+- **`NWPathMonitor`** — triggers retry on unsatisfied → satisfied transition
+- **`willTerminateNotification`** — safety net persistence on graceful quit
+- **Startup recovery** — restores unsettled channels from `PersistedProviderState` on init
+
+#### Tests: 6 new (177 SPM total, all passing)
+
+- `testProviderStateRoundTrip_withUnsettledChannels` — full persist/restore with signed voucher, crypto integrity verified
+- `testProviderStateRoundTrip_multipleUnsettledChannels` — 3 channels survive round-trip
+- `testProviderStateRoundTrip_unsettledChannelsNilWhenEmpty` — nil when no unsettled channels
+- `testProviderStatePersistsOnlyUnsettledChannels` — filtering matches ProviderEngine.persistState()
+- `testProviderStateDecodesWithoutUnsettledChannelsField` — backward compat with pre-#12b JSON
+- `testChannelWithVoucherCodableRoundTrip` — Channel+SignedVoucher JSON round-trip, signature bytes exact match
+
+#### Manual device testing (2026-04-11)
+
+**Kill-and-restart test (2 runs, both PASS):**
+1. Send requests from iPhone → provider accepts vouchers → force-quit provider
+2. Verify `provider_state.json` contains `unsettledChannels` with valid vouchers
+3. Relaunch provider → "Restored N unsettled channel(s)" in logs → settlement succeeds
+
+**Test 1:** 48cr recovered and settled on relaunch
+**Test 2:** 18cr recovered and settled on relaunch
+
+#### Plan doc: `docs/plans/12b-offline-settlement.md`
+
+---
+
+### Feature: Group Client Cards by Stable Device Identity
+
+**Problem:** Provider UI shows one card per `senderID` (MPC peer hash). Since `senderID` changes on every reconnect, the same iPhone spawns multiple client cards. A provider with 2 real devices may see 10+ cards after several reconnects.
+
+**Root cause:** No stable device identity. `senderID` is transport-level (changes per connection). `userPubkey` in `SessionGrant` is per-session (new `JanusKeyPair()` on every `SessionManager.create()`). Neither is usable for grouping.
+
+**Solution:** Persistent device identity key (`client_device_identity.json`), sent as `clientIdentity` on every `PromptRequest`, provider groups by identity with senderID fallback.
+
+#### What was built
+
+- **`SessionManager.deviceIdentityKey()`** — static method, loads or creates a `JanusKeyPair` persisted to `client_device_identity.json`. Cached in memory after first load. `clearDeviceIdentity()` for reset.
+- **`PromptRequest.clientIdentity: String?`** — optional Ed25519 pubkey base64, backward compat
+- **`ClientEngine.submitRequest()`** — populates `clientIdentity` from `deviceIdentityKey().publicKeyBase64`
+- **`ProviderEngine.sessionToIdentity`** — runtime dict mapping `sessionID → clientIdentity`
+- **`ClientSummary.senderIDs: [String]`** — all transport-level senderIDs for this identity
+- **`clientSummaries`** — groups by `sessionToIdentity[sessionID] ?? senderID`, uses `Set<String>` during aggregation
+- **`ProviderAdvertiserTransport`** — new `displayName(forSenderIDs:)` and `isConnected(senderIDs:)` with protocol defaults
+- **`MPCAdvertiser`** — explicit overrides using `senderToPeer` mapping (MUST-FIX from architecture review)
+- **`ProviderStatusView.clientCard()`** — switched to `senderIDs`-based lookups
+- **`removeChannelIfMatch()`** — prunes `sessionToIdentity` but NOT `sessionToSender` (MUST-FIX from architecture review)
+
+#### Architecture reviews
+
+Plan reviewed by both `systems-architect` and `architecture-reviewer` agents. Key findings:
+- **P0:** Force-unwrap crash on corrupted identity file → `guard let` for base64 decoding
+- **P1:** Disk I/O on every request → static cache after first load
+- **P1:** No way to reset identity → `clearDeviceIdentity()` method
+- **MUST-FIX:** `MPCAdvertiser` has explicit overrides of single-senderID methods → new multi-senderID methods also need explicit implementations
+- **MUST-FIX:** Don't prune `sessionToSender` in `removeChannelIfMatch()` → only prune `sessionToIdentity`
+
+#### Manual device testing (2026-04-11)
+
+**Setup:** Mac = JanusProvider, iPhone 16 + iPhone 14 Plus = JanusClient
+
+| Test | Result |
+|------|--------|
+| Both iPhones connect, send requests | 2 client cards shown |
+| iPhone 16 disconnects, reconnects, sends request | Still 2 client cards (not 3) |
+
+#### Files changed (6 files, all modifications)
+
+| File | Changes |
+|------|---------|
+| `Sources/JanusShared/Protocol/PromptRequest.swift` | Added `clientIdentity: String?` |
+| `JanusApp/JanusClient/SessionManager.swift` | `deviceIdentityKey()`, `clearDeviceIdentity()`, `DeviceIdentity` struct |
+| `JanusApp/JanusClient/ClientEngine.swift` | Populate `clientIdentity` in `submitRequest()` |
+| `JanusApp/JanusProvider/ProviderEngine.swift` | `sessionToIdentity`, identity-based `clientSummaries`, `senderIDs` on `ClientSummary` |
+| `JanusApp/JanusProvider/ProviderAdvertiserTransport.swift` | `displayName(forSenderIDs:)`, `isConnected(senderIDs:)` |
+| `JanusApp/JanusProvider/MPCAdvertiser.swift` | Explicit multi-senderID overrides |
+
+#### Plan doc: `docs/plans/stable-client-identity.md`
+
+---
+
+### Known Issue: Intermittent "failed to decode signed transaction" during settlement
+
+**Observed:** 1 failure out of 11 settlement attempts in the provider log. Error: `Settle failed: RPC error: failed to decode signed transaction`.
+
+**Analysis:** The error occurs at RPC decode time — the node can't parse the raw transaction bytes, before any validation (nonce, balance, etc.) runs.
+
+**Likely causes (ranked):**
+
+1. **V value encoding for chainId 42431** — EIP-155 produces `v = 84897` (3 bytes), uncommon for standard Ethereum. Some Tempo RPC backends may reject large V values during strict parsing. Intermittent if Tempo load-balances across nodes with different strictness.
+
+2. **R/S leading-zero stripping** — RLP encoder strips leading zeros from `r` and `s` signature components. If either starts with `0x00` bytes, it encodes as < 32 bytes. Most nodes handle this, but strict parsers may reject. Probabilistic (~1/128 chance per component).
+
+3. **Transaction type mismatch** — Code uses legacy Type 0 (EIP-155). Tempo has custom Type 118 (`0x76`). WORKLOG notes "legacy type 0 works", but if an RPC node update tightened validation, Type 0 could fail at decode.
+
+**Severity:** Low. 10/11 settlements succeeded. Failed voucher remains persisted (#12b), will be retried on next network restore or app restart. No money lost.
+
+**Potential fixes (if frequency increases):**
+- Switch to Tempo Type 118 transactions (native format, guaranteed accepted)
+- Pad R/S to 32 bytes in RLP encoding
+- Add retry with re-signing in `ChannelSettler` (fresh signature = different R/S values)
+
+**Status:** Tabled for later investigation. Monitor frequency in future testing sessions.

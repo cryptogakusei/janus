@@ -112,6 +112,23 @@ class MPCAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTransport {
         return session.connectedPeers.contains(peer)
     }
 
+    /// Get display name for any of the given senderIDs (identity-based grouping).
+    func displayName(forSenderIDs senderIDs: [String]) -> String? {
+        for id in senderIDs {
+            if let peer = senderToPeer[id] { return connectedPeers[peer] }
+        }
+        return nil
+    }
+
+    /// Check if ANY of the given senderIDs is currently connected.
+    func isConnected(senderIDs: [String]) -> Bool {
+        senderIDs.contains { id in
+            guard let peer = senderToPeer[id],
+                  let session = clientSessions[peer] else { return false }
+            return session.connectedPeers.contains(peer)
+        }
+    }
+
     /// Send ServiceAnnounce to a connected client via their dedicated session.
     private func sendServiceAnnounce(to peer: MCPeerID) {
         guard let session = clientSessions[peer] else { return }

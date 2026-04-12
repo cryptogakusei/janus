@@ -15,6 +15,8 @@ public struct PromptRequest: Codable, Sendable {
     public let sessionGrant: SessionGrant?
     /// Tempo channel info — included on first request for voucher-based sessions.
     public let channelInfo: ChannelInfo?
+    /// Stable device identity (Ed25519 pubkey base64). Used by provider to group sessions from the same device.
+    public let clientIdentity: String?
 
     public init(
         requestID: String = UUID().uuidString,
@@ -24,7 +26,8 @@ public struct PromptRequest: Codable, Sendable {
         parameters: Parameters = Parameters(),
         maxOutputTokens: Int? = nil,
         sessionGrant: SessionGrant? = nil,
-        channelInfo: ChannelInfo? = nil
+        channelInfo: ChannelInfo? = nil,
+        clientIdentity: String? = nil
     ) {
         self.requestID = requestID
         self.sessionID = sessionID
@@ -34,6 +37,7 @@ public struct PromptRequest: Codable, Sendable {
         self.maxOutputTokens = maxOutputTokens
         self.sessionGrant = sessionGrant
         self.channelInfo = channelInfo
+        self.clientIdentity = clientIdentity
     }
 
     public struct Parameters: Codable, Sendable {

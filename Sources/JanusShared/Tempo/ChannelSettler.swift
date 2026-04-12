@@ -21,12 +21,49 @@ public struct ChannelSettler: Sendable {
         self.config = config
     }
 
+    /// Categorized failure reasons for on-chain settlement.
+    public enum SettleFailureReason: Sendable, CustomStringConvertible {
+        /// Channel has not been opened on-chain (client may still be opening it).
+        case channelNotOnChain
+        /// Channel is closed or expired on-chain — permanent, cannot settle.
+        case channelFinalized
+        /// Failed to fetch gas price or transaction nonce.
+        case gasInfoUnavailable(String)
+        /// Settlement transaction was mined but reverted.
+        case transactionReverted(txHash: String)
+        /// Signing, submission, or receipt polling failed.
+        case submissionFailed(String)
+
+        /// Whether this failure is permanent (channel should be removed) or transient (keep for retry).
+        public var isPermanent: Bool {
+            switch self {
+            case .channelFinalized, .transactionReverted: return true
+            case .channelNotOnChain, .gasInfoUnavailable, .submissionFailed: return false
+            }
+        }
+
+        public var description: String {
+            switch self {
+            case .channelNotOnChain:
+                return "Channel does not exist on-chain"
+            case .channelFinalized:
+                return "Channel is finalized"
+            case .gasInfoUnavailable(let detail):
+                return "Failed to get gas info: \(detail)"
+            case .transactionReverted(let txHash):
+                return "Settle tx reverted: \(txHash)"
+            case .submissionFailed(let detail):
+                return "Settle failed: \(detail)"
+            }
+        }
+    }
+
     /// Result of a settlement attempt.
     public enum SettleResult: Sendable {
         case settled(txHash: String, amount: UInt64)
         case noVoucher
         case alreadySettled
-        case failed(String)
+        case failed(SettleFailureReason)
     }
 
     /// Settle a channel on-chain using the provider's ETH keypair and the latest voucher.
@@ -49,10 +86,10 @@ public struct ChannelSettler: Sendable {
         let escrowClient = EscrowClient(rpc: rpc, escrowAddress: config.escrowContract)
         if let onChain = try? await escrowClient.getChannel(channelId: channel.channelId) {
             if !onChain.exists {
-                return .failed("Channel does not exist on-chain")
+                return .failed(.channelNotOnChain)
             }
             if onChain.finalized {
-                return .failed("Channel is finalized")
+                return .failed(.channelFinalized)
             }
             if let onChainSettled = onChain.settled.toUInt64, onChainSettled >= amount {
                 return .alreadySettled
@@ -66,7 +103,7 @@ public struct ChannelSettler: Sendable {
             gasPrice = try await rpc.gasPrice()
             nonce = try await rpc.getTransactionCount(address: providerKeyPair.address)
         } catch {
-            return .failed("Failed to get gas info: \(error.localizedDescription)")
+            return .failed(.gasInfoUnavailable(error.localizedDescription))
         }
 
         // The signature needs v = 27/28 for on-chain ecrecover (not 0/1)
@@ -88,11 +125,11 @@ public struct ChannelSettler: Sendable {
             let txHash = try await rpc.sendRawTransaction(signedTx: signed)
             let receipt = try await rpc.waitForReceipt(txHash: txHash)
             guard receipt.status else {
-                return .failed("Settle tx reverted: \(txHash)")
+                return .failed(.transactionReverted(txHash: txHash))
             }
             return .settled(txHash: txHash, amount: amount)
         } catch {
-            return .failed("Settle failed: \(error.localizedDescription)")
+            return .failed(.submissionFailed(error.localizedDescription))
         }
     }
 }

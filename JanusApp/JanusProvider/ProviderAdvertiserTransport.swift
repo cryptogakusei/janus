@@ -29,6 +29,12 @@ protocol ProviderAdvertiserTransport: AnyObject {
 
     /// Check whether a senderID is currently connected.
     func isConnected(senderID: String) -> Bool
+
+    /// Get display name for any of the given senderIDs (identity-based grouping).
+    func displayName(forSenderIDs senderIDs: [String]) -> String?
+
+    /// Check if ANY of the given senderIDs is currently connected.
+    func isConnected(senderIDs: [String]) -> Bool
 }
 
 // Default implementations derived from connectedClients.
@@ -39,5 +45,16 @@ extension ProviderAdvertiserTransport {
 
     func isConnected(senderID: String) -> Bool {
         connectedClients[senderID] != nil
+    }
+
+    func displayName(forSenderIDs senderIDs: [String]) -> String? {
+        for id in senderIDs {
+            if let name = connectedClients[id] { return name }
+        }
+        return nil
+    }
+
+    func isConnected(senderIDs: [String]) -> Bool {
+        senderIDs.contains { connectedClients[$0] != nil }
     }
 }
