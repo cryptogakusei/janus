@@ -27,6 +27,9 @@ class BonjourAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTransport
 
     private let serviceType = "_janus-tcp._tcp"
     private var listener: NWListener?
+    private var retryTask: Task<Void, Never>?
+    private var retryCount = 0
+    private let maxRetries = 5
 
     private var serviceAnnounce: ServiceAnnounce
 
@@ -72,16 +75,25 @@ class BonjourAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTransport
                     switch state {
                     case .ready:
                         self.isAdvertising = true
+                        self.retryCount = 0
                         if let port = self.listener?.port {
                             print("[BonjourAdvertiser] Listening on port \(port)")
                         }
                     case .failed(let error):
                         print("[BonjourAdvertiser] Listener failed: \(error)")
                         self.isAdvertising = false
-                        // Restart after failure
                         self.listener?.cancel()
                         self.listener = nil
-                        self.startAdvertising()
+                        self.retryCount += 1
+                        if self.retryCount <= self.maxRetries {
+                            print("[BonjourAdvertiser] Retry \(self.retryCount)/\(self.maxRetries) in 5s...")
+                            self.retryTask = Task { [weak self] in
+                                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                                await self?.startAdvertising()
+                            }
+                        } else {
+                            print("[BonjourAdvertiser] Max retries reached. Check Local Network permission in System Settings.")
+                        }
                     case .cancelled:
                         self.isAdvertising = false
                     default:
@@ -104,6 +116,8 @@ class BonjourAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTransport
     }
 
     func stopAdvertising() {
+        retryTask?.cancel()
+        retryTask = nil
         listener?.cancel()
         listener = nil
         isAdvertising = false
