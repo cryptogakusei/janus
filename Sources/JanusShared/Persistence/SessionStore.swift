@@ -98,6 +98,9 @@ public struct PersistedProviderState: Codable, Sendable {
     /// Channels with unsettled vouchers, keyed by sessionID.
     /// Persisted so the provider can settle after restart or connectivity loss.
     public var unsettledChannels: [String: Channel]?
+    /// Identity mappings for unsettled sessions (sessionID → device pubkey base64).
+    /// Only unsettled channels survive restart; other identity mappings are re-established on reconnect.
+    public var sessionToIdentity: [String: String]?
 
     public init(
         providerID: String,
@@ -107,7 +110,8 @@ public struct PersistedProviderState: Codable, Sendable {
         totalCreditsEarned: Int = 0,
         requestLog: [PersistedLogEntry] = [],
         ethPrivateKeyHex: String? = nil,
-        unsettledChannels: [String: Channel]? = nil
+        unsettledChannels: [String: Channel]? = nil,
+        sessionToIdentity: [String: String]? = nil
     ) {
         self.providerID = providerID
         self.privateKeyBase64 = privateKeyBase64
@@ -117,6 +121,7 @@ public struct PersistedProviderState: Codable, Sendable {
         self.requestLog = requestLog
         self.ethPrivateKeyHex = ethPrivateKeyHex
         self.unsettledChannels = unsettledChannels
+        self.sessionToIdentity = sessionToIdentity
     }
 
     /// Custom decoder: defaults new fields when missing (backwards compatibility).
@@ -130,6 +135,7 @@ public struct PersistedProviderState: Codable, Sendable {
         requestLog = try container.decodeIfPresent([PersistedLogEntry].self, forKey: .requestLog) ?? []
         ethPrivateKeyHex = try container.decodeIfPresent(String.self, forKey: .ethPrivateKeyHex)
         unsettledChannels = try container.decodeIfPresent([String: Channel].self, forKey: .unsettledChannels)
+        sessionToIdentity = try container.decodeIfPresent([String: String].self, forKey: .sessionToIdentity)
     }
 }
 

@@ -2023,3 +2023,31 @@ Shows the provider operator how many credits are pending on-chain settlement.
 | Turn WiFi back on → settlement retries | "Settling..." pill appears → "Pending" clears to 0 |
 
 #### Plan doc: `docs/plans/12b-pending-settlement-indicator.md`
+
+---
+
+### Fix: Duplicate Client Cards After Reconnect
+
+**Problem:** Same iPhone shows as multiple client cards after reconnecting, despite the stable-client-identity feature.
+
+**Root causes (3 bugs found):**
+
+1. **Ghost cards from stale `sessionToSender`** — `removeChannelIfMatch` pruned `sessionToIdentity` but kept `sessionToSender`. After settlement, the stale entry fell back to senderID as grouping key → ghost card. When the device reconnected with a new senderID, a second (correct) card appeared.
+
+2. **`sessionToIdentity` not persisted** — After provider restart, restored channels had no identity mapping → fell back to senderID grouping.
+
+3. **Restored channels invisible in UI** — `clientSummaries` iterated `sessionToSender` (routing table), but restored channels had no `sessionToSender` entry → invisible despite `activeSessionCount` being nonzero.
+
+**What was fixed:**
+
+- **`removeChannelIfMatch` full cleanup** — now prunes `sessionToSender`, `lastResponses`, and updates `activeSessionCount` alongside existing `channels` + `sessionToIdentity` cleanup
+- **`sessionToIdentity` persisted** — added to `PersistedProviderState` as optional field, restored in `init`, filtered to unsettled sessions only in `persistState()`
+- **`clientSummaries` iterates `channels.keys`** — source of truth for existing sessions, not `sessionToSender` (routing table). Eliminates ghost cards structurally. Identity fallback chain: `sessionToIdentity` → `senderID` → `sessionID`
+
+#### Manual device testing (2026-04-12)
+
+| Test | Result |
+|------|--------|
+| Connect iPhone → send requests → disconnect → reconnect → send request | 1 client card (was 2 before fix) |
+
+#### Plan doc: `docs/plans/fix-duplicate-client-cards.md`

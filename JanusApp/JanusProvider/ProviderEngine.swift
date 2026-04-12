@@ -74,9 +74,11 @@ class ProviderEngine: ObservableObject {
         var summaries: [String: ClientSummary] = [:]
         var senderIDSets: [String: Set<String>] = [:]
 
-        for (sessionID, senderID) in sessionToSender {
-            // Use stable identity if available, fall back to senderID
-            let identity = sessionToIdentity[sessionID] ?? senderID
+        // Iterate channels (source of truth for existing sessions), not sessionToSender (routing table)
+        for sessionID in channels.keys {
+            let senderID = sessionToSender[sessionID]
+            // Use stable identity if available, fall back to senderID, then sessionID
+            let identity = sessionToIdentity[sessionID] ?? senderID ?? sessionID
             let channel = channels[sessionID]
 
             var summary = summaries[identity] ?? ClientSummary(
@@ -90,7 +92,9 @@ class ProviderEngine: ObservableObject {
                 lastActive: nil,
                 logs: []
             )
-            senderIDSets[identity, default: []].insert(senderID)
+            if let senderID {
+                senderIDSets[identity, default: []].insert(senderID)
+            }
             summary.sessionIDs.append(sessionID)
             summary.totalCreditsUsed += Int(channel?.authorizedAmount ?? 0)
             summary.maxCredits += Int(channel?.deposit ?? 0)
@@ -178,6 +182,10 @@ class ProviderEngine: ObservableObject {
             if let unsettled = persisted.unsettledChannels, !unsettled.isEmpty {
                 self.channels = unsettled
                 self.activeSessionCount = unsettled.count
+                // Restore identity mappings so clientSummaries groups correctly
+                if let identities = persisted.sessionToIdentity {
+                    self.sessionToIdentity = identities
+                }
                 print("Restored \(unsettled.count) unsettled channel(s) from previous session")
             }
             print("Restored provider state: \(persisted.totalRequestsServed) served")
@@ -395,7 +403,7 @@ class ProviderEngine: ObservableObject {
     }
 
     /// Remove a channel only if its channelId still matches (guards against a reconnected client replacing the channel).
-    /// Also prunes sessionToIdentity (UI grouping). Does NOT prune sessionToSender — it's needed for send() routing.
+    /// Prunes all session-related state: identity mapping, sender routing, and cached responses.
     private func removeChannelIfMatch(sessionID: String, expectedChannelId: Data, onlyIfSettled: Bool = false) {
         guard channels[sessionID]?.channelId == expectedChannelId else { return }
         if onlyIfSettled {
@@ -403,6 +411,9 @@ class ProviderEngine: ObservableObject {
         }
         channels.removeValue(forKey: sessionID)
         sessionToIdentity.removeValue(forKey: sessionID)
+        sessionToSender.removeValue(forKey: sessionID)
+        lastResponses.removeValue(forKey: sessionID)
+        activeSessionCount = channels.count
         persistState()
     }
 
@@ -744,6 +755,9 @@ class ProviderEngine: ObservableObject {
                               credits: entry.credits, isError: entry.isError, sessionID: entry.sessionID)
         }
         let unsettled = channels.filter { $0.value.latestVoucher != nil && $0.value.unsettledAmount > 0 }
+        // Only persist identity mappings for unsettled sessions — those are the only channels restored on restart.
+        // Non-unsettled identity mappings are re-established when clients reconnect and send a PromptRequest.
+        let unsettledIdentities = sessionToIdentity.filter { unsettled[$0.key] != nil }
         let state = PersistedProviderState(
             providerID: providerID,
             privateKeyBase64: providerKeyPair.privateKeyBase64,
@@ -752,7 +766,8 @@ class ProviderEngine: ObservableObject {
             totalCreditsEarned: totalCreditsEarned,
             requestLog: logEntries,
             ethPrivateKeyHex: providerEthKeyPair?.privateKeyData.ethHexPrefixed,
-            unsettledChannels: unsettled.isEmpty ? nil : unsettled
+            unsettledChannels: unsettled.isEmpty ? nil : unsettled,
+            sessionToIdentity: unsettledIdentities.isEmpty ? nil : unsettledIdentities
         )
         do {
             try store.save(state, as: Self.filename)
