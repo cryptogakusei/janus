@@ -1582,7 +1582,7 @@ Full prioritized list of all remaining features across relay, transport, payment
 | 11 | Channel top-up | Small-Medium | — | Add funds to existing channel without opening a new one. Depends on whether TempoStreamChannel contract supports it. Swift side needs a top-up flow in ChannelOpener. |
 | 12 | Multi-channel management UI | Small | — | View/manage channels with multiple providers. Currently one provider, one channel. |
 | 12a | ~~Fix first-query failure after provider switch~~ | Small | — | **DONE.** Generation counter in `createSession()` discards stale async results. `canSubmit` gated on `sessionReady` (not just `connectedProvider`). Defense-in-depth guard in `submitRequest()`. |
-| 13 | Periodic & threshold-based settlement | Small | — | Provider settles on a timer (configurable interval, default 5 min) and/or when aggregate unsettled credits cross a threshold (configurable, default 50). Provider UI with segmented pickers. Prevents provider from being at mercy of client disconnect timing. |
+| 13 | ~~Periodic & threshold-based settlement~~ | Small | — | **DONE.** Provider settles on a configurable timer (default 5 min) and/or when aggregate unsettled credits cross a threshold (default 50). Provider UI with segmented pickers. Persisted settings survive restart. Bug fix: `settledAmount` desync after provider restart caused inflated `unsettledAmount` and premature threshold triggers — fixed by initializing `settledAmount` from on-chain state during channel verification. Additional hardening: startup race fix (fund→retry→timer ordering), settlement queuing (no dropped disconnect requests), 24h TTL on stale channels, zombie channel prevention (re-check on-chain after tx revert), computed `activeSessionCount`. |
 | 13b | Real token economics / USD pricing | Product decision | — | Dynamic pricing by model load, token count, or USD denomination. Currently fixed 3/5/8 credit tiers. |
 | 14 | Mainnet deployment | Small | — | TempoConfig.mainnet + deploy TempoStreamChannel contract to mainnet. No code changes needed. |
 | 14b | Cap off-chain voucher exposure | Small | — | Provider currently serves inference optimistically before the client's channel is confirmed on-chain (`VoucherVerifier` returns `.acceptedOffChainOnly`). Risk: client never opens channel, provider serves for free. Fix: serve first request optimistically, require on-chain confirmation before subsequent requests. Bounded risk (one cheap inference per session). |
@@ -2096,3 +2096,57 @@ Shows the provider operator how many credits are pending on-chain settlement.
 - **Reset on success** — retry counter resets when listener reaches `.ready` state
 
 **Debugging journey:** Provider UI showed "Advertising" (green) but `dns-sd -B _janus-tcp._tcp` on other machines couldn't see the Air's service. Confirmed firewall was disabled, both Macs on same WiFi, Air could see Pro's service but not its own. Running from Xcode console revealed the NoAuth loop. System restart cleared the stale permission state.
+
+---
+
+### Feature #13: Periodic & Threshold-Based Settlement (2026-04-12)
+
+**Problem:** Provider only settled when clients disconnected — entirely at the client's mercy. Hours of accumulated unsettled vouchers at risk if provider crashes.
+
+**Implementation:** Two new settlement triggers alongside existing disconnect trigger:
+1. **Periodic timer** — `Task.sleep` loop on `@MainActor`, configurable interval (Off/1min/5min/15min/30min)
+2. **Aggregate threshold** — checked after every voucher acceptance, fires when total unsettled credits across all clients >= threshold (Off/25/50/100)
+
+Both use `removeAfterSettlement: false` (keeps channels alive for active clients) and `isRetry: true` (skips redundant faucet funding). Settings persisted in `PersistedProviderState`, UI via segmented pickers with split `onChange` handlers.
+
+**Plan doc:** `docs/plans/13-periodic-settlement.md`
+
+#### Bug: Premature settlement with two clients (settledAmount desync)
+
+**Symptom:** With threshold=25, provider settled after only 12 new credits. Pending credits UI briefly flashed 75. Happened consistently when two iPhones connected after a provider restart.
+
+**Root cause:** After periodic settlement, channels with `unsettledAmount == 0` were correctly excluded from persistence (nothing to settle). But when the provider restarted and clients reconnected with the same on-chain channel, the provider created a fresh `Channel` with `settledAmount = 0`. The client's voucher `cumulativeAmount` includes ALL prior spend (cumulative accounting), so `unsettledAmount = cumulativeAmount - 0` was massively inflated by already-settled spend.
+
+Example: Client had 18 credits settled on-chain from previous session. After restart, provider's new Channel has `settledAmount = 0`. Client sends voucher for 21 (18 old + 3 new). Provider sees `unsettledAmount = 21` instead of `3`.
+
+**Fix:** Initialize `settledAmount` from on-chain state when creating a Channel from `channelInfo`. The `verifyChannelInfoOnChain()` call already queries the escrow contract — added `onChainSettled` to `ChannelVerificationResult.acceptedOnChain` and call `channel.recordSettlement(amount: onChainSettled)` on the new Channel. Zero extra RPC calls.
+
+#### Additional hardening (systems-architect review findings)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| P0 | Startup race: `retryPendingSettlements()` ran before `fundProviderIfNeeded()` completed — retry failed with no gas, stale channels persisted | Chained in single Task: fund → retry → startTimer |
+| P1 | Periodic timer started from app launch, not after cleanup — could fire while stale channels still being retried | Moved `startPeriodicSettlement()` after retry completes |
+| P2 | Tx revert after failed pre-flight RPC check created zombie channels (already settled on-chain but provider didn't know) | `ChannelSettler.settle()` re-checks on-chain state after revert, returns `.alreadySettled` if applicable |
+| P2 | No TTL on restored channels — infinitely retried even after on-chain channel closed | Added `lastVoucherAt` timestamp to `Channel`, discard channels older than 24h on retry |
+| P2 | Disconnect settlement silently dropped when threshold settlement in progress (`isSettling` guard) | Queue settlement request, re-run after current completes with merged parameters |
+| P3 | `activeSessionCount` inflated by settled channels from disconnected clients | Changed to computed property: counts channels with active sender OR unsettled amount |
+
+#### Files changed
+
+| File | Changes |
+|------|---------|
+| `Sources/JanusShared/Tempo/Channel.swift` | Added `lastVoucherAt: Date?` timestamp, set on `acceptVoucher` |
+| `Sources/JanusShared/Tempo/ChannelSettler.swift` | Re-check on-chain state after tx revert |
+| `Sources/JanusShared/Verification/VoucherVerifier.swift` | Added `onChainSettled` to `ChannelVerificationResult.acceptedOnChain` |
+| `JanusApp/JanusProvider/ProviderEngine.swift` | Initialize `settledAmount` from on-chain, TTL cleanup, settlement queuing, computed `activeSessionCount`, diagnostic logging, startup ordering |
+| `JanusApp/JanusProvider/ProviderStatusView.swift` | Startup: fund → retry → timer in single Task |
+| `Tests/JanusSharedTests/OnChainTests.swift` | Updated for new `acceptedOnChain` signature |
+
+#### Testing (2 iPhones + Mac provider)
+
+| Test | Result |
+|------|--------|
+| Send 21 credits from iPhone 1, then switch to iPhone 2 (threshold=25) | No premature settlement — pending shows correct delta, not inflated cumulative |
+| Periodic timer fires after 5 min from startup cleanup (not app launch) | Correct timing verified |
+| Provider restart → clients reconnect → `settledAmount` initialized from on-chain | Log shows "Initialized settledAmount=N from on-chain" |
