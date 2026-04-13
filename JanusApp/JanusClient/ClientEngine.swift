@@ -31,6 +31,9 @@ class ClientEngine: ObservableObject {
     // Response history (newest first) — backed by SessionManager persistence
     @Published var responseHistory: [HistoryEntry] = []
 
+    // Settlement verification
+    @Published var settlementStatus: SettlementStatus = .unverified
+
     // Disconnect detection
     @Published var disconnectedDuringRequest = false
 
@@ -170,6 +173,7 @@ class ClientEngine: ObservableObject {
                 restored.retryChannelOpenIfNeeded()
             }
             sessionReady = true
+            restoreSettlementStatus()
             print("Restored session: \(restored.sessionGrant.sessionID.prefix(8))... (\(restored.remainingCredits) credits left, \(restored.history.count) history)")
         } else {
             // Request grant from backend (async)
@@ -186,6 +190,7 @@ class ClientEngine: ObservableObject {
                 }
                 sessionManager = manager
                 responseHistory = []
+                settlementStatus = .unverified
                 sessionReady = true
             }
         }
@@ -436,5 +441,33 @@ class ClientEngine: ObservableObject {
     /// Minimum credits needed (smallest pricing tier).
     var canAffordRequest: Bool {
         (sessionManager?.remainingCredits ?? 0) >= PricingTier.small.credits
+    }
+
+    // MARK: - Settlement verification
+
+    /// Trigger on-chain settlement verification.
+    func verifySettlement() {
+        Task {
+            if let status = await sessionManager?.verifySettlementOnChain() {
+                settlementStatus = status
+            }
+        }
+    }
+
+    /// Restore settlement status from persisted session state.
+    private func restoreSettlementStatus() {
+        guard let session = sessionManager,
+              let verified = session.lastVerifiedSettlement else {
+            settlementStatus = .unverified
+            return
+        }
+        let expected = UInt64(session.spendState.cumulativeSpend)
+        if verified == expected {
+            settlementStatus = .match(settled: verified)
+        } else if verified > expected {
+            settlementStatus = .overpayment(settled: verified, expected: expected)
+        } else {
+            settlementStatus = .underpayment(settled: verified, expected: expected)
+        }
     }
 }

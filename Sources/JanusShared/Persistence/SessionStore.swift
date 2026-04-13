@@ -22,6 +22,10 @@ public struct PersistedClientSession: Codable, Sendable {
     public var history: [HistoryEntry]
     /// Hex-encoded ETH private key for Tempo channel payer (persisted to survive reconnect).
     public var ethPrivateKeyHex: String?
+    /// Channel ID from the last active Tempo channel (for post-settlement verification).
+    public var lastChannelId: Data?
+    /// On-chain verified settlement amount (nil = not yet verified).
+    public var lastVerifiedSettlement: UInt64?
 
     public init(
         privateKeyBase64: String,
@@ -29,7 +33,9 @@ public struct PersistedClientSession: Codable, Sendable {
         spendState: SpendState,
         receipts: [Receipt] = [],
         history: [HistoryEntry] = [],
-        ethPrivateKeyHex: String? = nil
+        ethPrivateKeyHex: String? = nil,
+        lastChannelId: Data? = nil,
+        lastVerifiedSettlement: UInt64? = nil
     ) {
         self.privateKeyBase64 = privateKeyBase64
         self.sessionGrant = sessionGrant
@@ -37,6 +43,8 @@ public struct PersistedClientSession: Codable, Sendable {
         self.receipts = receipts
         self.history = history
         self.ethPrivateKeyHex = ethPrivateKeyHex
+        self.lastChannelId = lastChannelId
+        self.lastVerifiedSettlement = lastVerifiedSettlement
     }
 
     /// Custom decoder: defaults optional fields when missing (backwards compatibility).
@@ -48,6 +56,8 @@ public struct PersistedClientSession: Codable, Sendable {
         receipts = try container.decode([Receipt].self, forKey: .receipts)
         history = try container.decodeIfPresent([HistoryEntry].self, forKey: .history) ?? []
         ethPrivateKeyHex = try container.decodeIfPresent(String.self, forKey: .ethPrivateKeyHex)
+        lastChannelId = try container.decodeIfPresent(Data.self, forKey: .lastChannelId)
+        lastVerifiedSettlement = try container.decodeIfPresent(UInt64.self, forKey: .lastVerifiedSettlement)
     }
 
     /// Whether this session is still valid (not expired).

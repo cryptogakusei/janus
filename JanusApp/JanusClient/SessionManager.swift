@@ -18,6 +18,8 @@ class SessionManager: ObservableObject {
     @Published var remainingCredits: Int
     @Published var receipts: [Receipt] = []
     @Published var history: [HistoryEntry] = []
+    @Published var lastChannelId: Data?
+    @Published var lastVerifiedSettlement: UInt64?
 
     let clientKeyPair: JanusKeyPair
     let sessionGrant: SessionGrant
@@ -110,6 +112,8 @@ class SessionManager: ObservableObject {
         self.remainingCredits = persisted.remainingCredits
         self.receipts = persisted.receipts
         self.history = persisted.history
+        self.lastChannelId = persisted.lastChannelId
+        self.lastVerifiedSettlement = persisted.lastVerifiedSettlement
         self.store = store
 
         // Always restore local ETH keypair if persisted (used for on-chain ops AND voucher signing)
@@ -230,6 +234,7 @@ class SessionManager: ObservableObject {
             config: tempoConfig
         )
         self.channel = ch
+        self.lastChannelId = ch.channelId
         let chIdHex = ch.channelId.ethHexPrefixed
         os_log("CLIENT_CHANNEL_ID=%{public}@", log: smokeLog, type: .default, chIdHex)
         print("Tempo channel created: \(chIdHex.prefix(18))... deposit=\(ch.deposit)")
@@ -319,6 +324,34 @@ class SessionManager: ObservableObject {
         persist()
     }
 
+    /// Verify settlement on-chain by reading the escrow contract directly.
+    /// Compares on-chain settled amount against client's cumulative spend.
+    func verifySettlementOnChain() async -> SettlementStatus? {
+        guard let channelId = lastChannelId else { return nil }
+        let escrow = EscrowClient(config: tempoConfig)
+        do {
+            let onChain = try await escrow.getChannel(channelId: channelId)
+            guard let settled = onChain.settled.toUInt64 else {
+                print("WARNING: settled amount exceeds UInt64 range: \(onChain.settled)")
+                return nil
+            }
+            lastVerifiedSettlement = settled
+            persist()
+
+            let expected = UInt64(spendState.cumulativeSpend)
+            if settled == expected {
+                return .match(settled: settled)
+            } else if settled > expected {
+                return .overpayment(settled: settled, expected: expected)
+            } else {
+                return .underpayment(settled: settled, expected: expected)
+            }
+        } catch {
+            print("On-chain verification failed: \(error)")
+            return nil
+        }
+    }
+
     /// Clear persisted session (e.g. on session expiry or manual reset).
     func clearPersistedSession() {
         store.delete(Self.filename(for: providerID))
@@ -333,7 +366,9 @@ class SessionManager: ObservableObject {
             spendState: spendState,
             receipts: receipts,
             history: history,
-            ethPrivateKeyHex: ethKeyPair?.privateKeyData.ethHexPrefixed
+            ethPrivateKeyHex: ethKeyPair?.privateKeyData.ethHexPrefixed,
+            lastChannelId: lastChannelId,
+            lastVerifiedSettlement: lastVerifiedSettlement
         )
         do {
             try store.save(state, as: Self.filename(for: providerID))

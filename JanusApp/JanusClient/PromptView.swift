@@ -20,6 +20,10 @@ struct PromptView: View {
             VStack(spacing: 20) {
                 balanceBar
 
+                if engine.sessionManager?.spendState.cumulativeSpend ?? 0 > 0 {
+                    settlementSection
+                }
+
                 if engine.disconnectedDuringRequest {
                     disconnectedBanner
                 } else if !engine.sessionReady {
@@ -306,6 +310,87 @@ struct PromptView: View {
                     .cornerRadius(8)
                 }
             }
+        }
+    }
+
+    private var settlementSection: some View {
+        let spent = engine.sessionManager?.spendState.cumulativeSpend ?? 0
+        let status = engine.settlementStatus
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: "checkmark.shield")
+                Text("Settlement")
+                    .font(.subheadline.bold())
+                Spacer()
+                settlementBadge(status)
+            }
+            HStack {
+                Text("\(spent) credits spent")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if case .unverified = status {
+                    // not yet verified
+                } else {
+                    Text("\(status.settled) settled on-chain")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if case .match = status {
+                // fully verified — no button needed
+            } else {
+                Button(status == .unverified ? "Verify On-Chain" : "Re-verify") {
+                    engine.verifySettlement()
+                }
+                .font(.caption.bold())
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(settlementBackground(status))
+        .cornerRadius(10)
+    }
+
+    @ViewBuilder
+    private func settlementBadge(_ status: SettlementStatus) -> some View {
+        switch status {
+        case .match:
+            Text("Verified")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.green)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.green.opacity(0.1))
+                .cornerRadius(4)
+        case .overpayment:
+            Text("Overpayment")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.red)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.red.opacity(0.1))
+                .cornerRadius(4)
+        case .underpayment:
+            Text("Partial")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.orange.opacity(0.1))
+                .cornerRadius(4)
+        case .unverified:
+            EmptyView()
+        }
+    }
+
+    private func settlementBackground(_ status: SettlementStatus) -> Color {
+        switch status {
+        case .match: return .green.opacity(0.05)
+        case .overpayment: return .red.opacity(0.05)
+        case .underpayment: return .orange.opacity(0.05)
+        case .unverified: return .gray.opacity(0.05)
         }
     }
 
