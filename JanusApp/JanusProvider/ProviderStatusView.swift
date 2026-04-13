@@ -30,6 +30,7 @@ struct ProviderStatusView: View {
                 VStack(spacing: 16) {
                     statusStrip
                     statsStrip
+                    settlementSettingsSection
                     clientsSection
                     allLogsSection
                 }
@@ -61,6 +62,7 @@ struct ProviderStatusView: View {
             Task { await engine.loadModel() }
             Task { await engine.fundProviderIfNeeded() }
             engine.startNetworkMonitor()
+            engine.startPeriodicSettlement()
             Task { await engine.retryPendingSettlements() }
         }
     }
@@ -173,6 +175,51 @@ struct ProviderStatusView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Settlement settings
+
+    private var settlementSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Auto-Settlement")
+                .font(.subheadline.bold())
+
+            HStack {
+                Text("Interval:")
+                    .font(.caption)
+                Picker("", selection: $engine.settlementIntervalSeconds) {
+                    Text("Off").tag(0)
+                    Text("1 min").tag(60)
+                    Text("5 min").tag(300)
+                    Text("15 min").tag(900)
+                    Text("30 min").tag(1800)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            HStack {
+                Text("Threshold:")
+                    .font(.caption)
+                Picker("", selection: $engine.settlementThreshold) {
+                    Text("Off").tag(0)
+                    Text("25").tag(25)
+                    Text("50").tag(50)
+                    Text("100").tag(100)
+                }
+                .pickerStyle(.segmented)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.gray.opacity(0.05))
+        .cornerRadius(10)
+        .onChange(of: engine.settlementIntervalSeconds) { _, _ in
+            engine.persistState()
+            engine.startPeriodicSettlement()
+        }
+        .onChange(of: engine.settlementThreshold) { _, _ in
+            engine.persistState()
+        }
     }
 
     // MARK: - Clients section

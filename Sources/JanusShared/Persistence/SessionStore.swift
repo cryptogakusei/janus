@@ -111,6 +111,10 @@ public struct PersistedProviderState: Codable, Sendable {
     /// Identity mappings for unsettled sessions (sessionID → device pubkey base64).
     /// Only unsettled channels survive restart; other identity mappings are re-established on reconnect.
     public var sessionToIdentity: [String: String]?
+    /// Settlement interval in seconds (0 = disabled). Nil means never persisted (use engine default).
+    public var settlementIntervalSeconds: Int?
+    /// Aggregate unsettled credit threshold for auto-settlement (0 = disabled). Nil means never persisted.
+    public var settlementThreshold: Int?
 
     public init(
         providerID: String,
@@ -121,7 +125,9 @@ public struct PersistedProviderState: Codable, Sendable {
         requestLog: [PersistedLogEntry] = [],
         ethPrivateKeyHex: String? = nil,
         unsettledChannels: [String: Channel]? = nil,
-        sessionToIdentity: [String: String]? = nil
+        sessionToIdentity: [String: String]? = nil,
+        settlementIntervalSeconds: Int? = nil,
+        settlementThreshold: Int? = nil
     ) {
         self.providerID = providerID
         self.privateKeyBase64 = privateKeyBase64
@@ -132,6 +138,8 @@ public struct PersistedProviderState: Codable, Sendable {
         self.ethPrivateKeyHex = ethPrivateKeyHex
         self.unsettledChannels = unsettledChannels
         self.sessionToIdentity = sessionToIdentity
+        self.settlementIntervalSeconds = settlementIntervalSeconds
+        self.settlementThreshold = settlementThreshold
     }
 
     /// Custom decoder: defaults new fields when missing (backwards compatibility).
@@ -146,6 +154,8 @@ public struct PersistedProviderState: Codable, Sendable {
         ethPrivateKeyHex = try container.decodeIfPresent(String.self, forKey: .ethPrivateKeyHex)
         unsettledChannels = try container.decodeIfPresent([String: Channel].self, forKey: .unsettledChannels)
         sessionToIdentity = try container.decodeIfPresent([String: String].self, forKey: .sessionToIdentity)
+        settlementIntervalSeconds = try container.decodeIfPresent(Int.self, forKey: .settlementIntervalSeconds)
+        settlementThreshold = try container.decodeIfPresent(Int.self, forKey: .settlementThreshold)
     }
 }
 

@@ -1578,12 +1578,14 @@ Full prioritized list of all remaining features across relay, transport, payment
 
 | # | Feature | Effort | Dependencies | Details |
 |---|---------|--------|-------------|---------|
-| 10 | SettlementNotice message | Small | — | Provider → client: "I settled session Y for Z credits." Client currently has no way to know settlement happened. Low priority — settlement is provider-side, client doesn't need to act on it. |
+| 10 | ~~SettlementNotice message~~ → **On-chain settlement verification** | Small | — | **DONE.** Client reads blockchain directly via `EscrowClient.getChannel()` to verify provider settlement. Three-state comparison: match (green), overpayment (red), underpayment/partial (orange). Pull-only design — no provider changes needed. Push notification deferred to v2 (needs store-and-forward for disconnected clients). |
 | 11 | Channel top-up | Small-Medium | — | Add funds to existing channel without opening a new one. Depends on whether TempoStreamChannel contract supports it. Swift side needs a top-up flow in ChannelOpener. |
 | 12 | Multi-channel management UI | Small | — | View/manage channels with multiple providers. Currently one provider, one channel. |
-| 12a | Fix first-query failure after provider switch | Small | — | When switching providers (any mode), the first query can fail with "channel rejected / invalid session" because the query races with `createSession(providerID:)`. Fix: block query submission until new session + Tempo channel are fully initialized, or queue the query and replay after session setup. |
-| 13 | Real token economics / USD pricing | Product decision | — | Dynamic pricing by model load, token count, or USD denomination. Currently fixed 3/5/8 credit tiers. |
+| 12a | ~~Fix first-query failure after provider switch~~ | Small | — | **DONE.** Generation counter in `createSession()` discards stale async results. `canSubmit` gated on `sessionReady` (not just `connectedProvider`). Defense-in-depth guard in `submitRequest()`. |
+| 13 | Periodic & threshold-based settlement | Small | — | Provider settles on a timer (configurable interval, default 5 min) and/or when aggregate unsettled credits cross a threshold (configurable, default 50). Provider UI with segmented pickers. Prevents provider from being at mercy of client disconnect timing. |
+| 13b | Real token economics / USD pricing | Product decision | — | Dynamic pricing by model load, token count, or USD denomination. Currently fixed 3/5/8 credit tiers. |
 | 14 | Mainnet deployment | Small | — | TempoConfig.mainnet + deploy TempoStreamChannel contract to mainnet. No code changes needed. |
+| 14b | Cap off-chain voucher exposure | Small | — | Provider currently serves inference optimistically before the client's channel is confirmed on-chain (`VoucherVerifier` returns `.acceptedOffChainOnly`). Risk: client never opens channel, provider serves for free. Fix: serve first request optimistically, require on-chain confirmation before subsequent requests. Bounded risk (one cheap inference per session). |
 
 #### Long-term: Mesh network vision (#15–19)
 

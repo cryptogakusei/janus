@@ -146,6 +146,9 @@ class ProviderEngine: ObservableObject {
     /// Provider's Ethereum keypair (for Tempo address identity).
     private(set) var providerEthKeyPair: EthKeyPair?
     @Published private(set) var isSettling = false
+    @Published var settlementIntervalSeconds: Int = 300  // 5 minutes default
+    @Published var settlementThreshold: Int = 50          // 50 credits default
+    private var settlementTimerTask: Task<Void, Never>?
     private var networkMonitor: NWPathMonitor?
     private var lastPathStatus: NWPath.Status = .satisfied
 
@@ -187,6 +190,13 @@ class ProviderEngine: ObservableObject {
                     self.sessionToIdentity = identities
                 }
                 print("Restored \(unsettled.count) unsettled channel(s) from previous session")
+            }
+            // Restore settlement settings
+            if let interval = persisted.settlementIntervalSeconds {
+                self.settlementIntervalSeconds = interval
+            }
+            if let threshold = persisted.settlementThreshold {
+                self.settlementThreshold = threshold
             }
             print("Restored provider state: \(persisted.totalRequestsServed) served")
         } else {
@@ -285,11 +295,35 @@ class ProviderEngine: ObservableObject {
 
     deinit {
         networkMonitor?.cancel()
+        settlementTimerTask?.cancel()
+    }
+
+    /// Start periodic settlement timer. Settles all channels at the configured interval.
+    /// Idempotent — cancels any existing timer before starting a new one.
+    func startPeriodicSettlement() {
+        settlementTimerTask?.cancel()
+        let interval = settlementIntervalSeconds
+        guard interval > 0 else { return }  // 0 = disabled
+        settlementTimerTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
+                } catch {
+                    break  // CancellationError — exit cleanly
+                }
+                guard let self else { return }
+                let pending = self.pendingSettlementCredits
+                guard pending > 0 else { continue }
+                print("Periodic settlement triggered: \(pending) credits pending")
+                await self.settleAllChannelsOnChain(isRetry: true, removeAfterSettlement: false)
+            }
+        }
     }
 
     /// Settle all Tempo channels on-chain that have unsettled vouchers.
-    /// - Parameter isRetry: true when retrying persisted channels from a previous session (skips faucet/wait).
-    private func settleAllChannelsOnChain(isRetry: Bool = false) async {
+    /// - Parameter isRetry: true when retrying persisted channels or periodic/threshold triggers (skips faucet/wait).
+    /// - Parameter removeAfterSettlement: true to remove settled channels (disconnect path), false to keep them alive (periodic/threshold).
+    private func settleAllChannelsOnChain(isRetry: Bool = false, removeAfterSettlement: Bool = true) async {
         // Concurrent settlement guard — isSettling is safe as plain Bool because @MainActor serializes access
         guard !isSettling else { print("Settlement already in progress, skipping"); return }
         isSettling = true
@@ -314,7 +348,9 @@ class ProviderEngine: ObservableObject {
             switch result {
             case .settled(let txHash, let amount):
                 channels[sessionID]?.recordSettlement(amount: amount)
-                removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId, onlyIfSettled: true)
+                if removeAfterSettlement {
+                    removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId, onlyIfSettled: true)
+                }
                 print("On-chain settlement: session \(sessionID.prefix(8))... amount=\(amount) tx=\(txHash.prefix(18))...")
                 os_log("SETTLEMENT_TX=%{public}@", log: smokeLog, type: .default, txHash)
                 os_log("SETTLEMENT_AMOUNT=%{public}d", log: smokeLog, type: .default, amount)
@@ -327,7 +363,9 @@ class ProviderEngine: ObservableObject {
             case .noVoucher:
                 break
             case .alreadySettled:
-                removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
+                if removeAfterSettlement {
+                    removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
+                }
                 print("Channel \(sessionID.prefix(8))... already settled on-chain")
             case .failed(let reason):
                 if case .channelNotOnChain = reason {
@@ -366,7 +404,9 @@ class ProviderEngine: ObservableObject {
                 switch result {
                 case .settled(let txHash, let amount):
                     channels[sessionID]?.recordSettlement(amount: amount)
-                    removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId, onlyIfSettled: true)
+                    if removeAfterSettlement {
+                        removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId, onlyIfSettled: true)
+                    }
                     print("On-chain settlement (retry): session \(sessionID.prefix(8))... amount=\(amount)")
                     os_log("SETTLEMENT_TX=%{public}@", log: smokeLog, type: .default, txHash)
                     os_log("SETTLEMENT_AMOUNT=%{public}d", log: smokeLog, type: .default, amount)
@@ -377,7 +417,7 @@ class ProviderEngine: ObservableObject {
                         credits: Int(amount), isError: false, sessionID: sessionID
                     ))
                 case .noVoucher, .alreadySettled:
-                    if case .alreadySettled = result {
+                    if case .alreadySettled = result, removeAfterSettlement {
                         removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
                     }
                 case .failed(let reason):
@@ -597,6 +637,12 @@ class ProviderEngine: ObservableObject {
             return
         }
 
+        // Check aggregate threshold for auto-settlement
+        if settlementThreshold > 0 && pendingSettlementCredits >= settlementThreshold {
+            print("Threshold settlement triggered: \(pendingSettlementCredits) >= \(settlementThreshold)")
+            Task { await settleAllChannelsOnChain(isRetry: true, removeAfterSettlement: false) }
+        }
+
         // Log settlement data (needed for manual on-chain settlement via cast)
         print("VOUCHER ACCEPTED — settlement data:")
         print("  channelId: \(auth.channelId.ethHexPrefixed)")
@@ -748,7 +794,7 @@ class ProviderEngine: ObservableObject {
     // Receipts issued (for future settlement)
     private var receiptsIssued: [Receipt] = []
 
-    private func persistState() {
+    func persistState() {
         let logEntries = requestLog.map { entry in
             PersistedLogEntry(id: entry.id, timestamp: entry.timestamp, taskType: entry.taskType,
                               promptPreview: entry.promptPreview, responsePreview: entry.responsePreview,
@@ -767,7 +813,9 @@ class ProviderEngine: ObservableObject {
             requestLog: logEntries,
             ethPrivateKeyHex: providerEthKeyPair?.privateKeyData.ethHexPrefixed,
             unsettledChannels: unsettled.isEmpty ? nil : unsettled,
-            sessionToIdentity: unsettledIdentities.isEmpty ? nil : unsettledIdentities
+            sessionToIdentity: unsettledIdentities.isEmpty ? nil : unsettledIdentities,
+            settlementIntervalSeconds: settlementIntervalSeconds,
+            settlementThreshold: settlementThreshold
         )
         do {
             try store.save(state, as: Self.filename)
