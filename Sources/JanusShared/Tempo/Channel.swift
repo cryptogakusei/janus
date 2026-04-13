@@ -42,6 +42,9 @@ public struct Channel: Codable, Sendable, Equatable {
     /// The latest signed voucher held by the provider.
     public var latestVoucher: SignedVoucher?
 
+    /// When the latest voucher was accepted (for TTL-based cleanup of stale channels).
+    public var lastVoucherAt: Date?
+
     public init(
         payer: EthAddress,
         payee: EthAddress,
@@ -61,6 +64,7 @@ public struct Channel: Codable, Sendable, Equatable {
         self.state = .open
         self.settledAmount = 0
         self.latestVoucher = nil
+        self.lastVoucherAt = nil
         self.channelId = Channel.computeId(
             payer: payer, payee: payee, token: token,
             salt: salt, authorizedSigner: authorizedSigner,
@@ -141,6 +145,7 @@ public extension Channel {
             throw ChannelError.exceedsDeposit
         }
         latestVoucher = signedVoucher
+        lastVoucherAt = Date()
     }
 
     /// Record an on-chain settlement (provider calls `escrow.settle()`).

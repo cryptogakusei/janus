@@ -158,7 +158,8 @@ public struct VoucherVerifier: Sendable {
             }
 
             let onChainDeposit = onChain.deposit.toUInt64 ?? UInt64.max
-            return .acceptedOnChain(onChainDeposit: onChainDeposit)
+            let onChainSettled = onChain.settled.toUInt64 ?? 0
+            return .acceptedOnChain(onChainDeposit: onChainDeposit, onChainSettled: onChainSettled)
         } catch {
             // RPC call failed — fall back to off-chain
             return .acceptedOffChainOnly
@@ -168,8 +169,8 @@ public struct VoucherVerifier: Sendable {
 
 /// Result of on-chain channel verification.
 public enum ChannelVerificationResult: Sendable {
-    /// Channel verified against on-chain state. Deposit confirmed.
-    case acceptedOnChain(onChainDeposit: UInt64)
+    /// Channel verified against on-chain state. Deposit and settled amount confirmed.
+    case acceptedOnChain(onChainDeposit: UInt64, onChainSettled: UInt64)
     /// Off-chain checks passed, but on-chain verification skipped (no RPC or channel not yet opened).
     case acceptedOffChainOnly
     /// Verification failed.

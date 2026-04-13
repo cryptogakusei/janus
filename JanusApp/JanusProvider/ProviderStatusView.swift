@@ -60,10 +60,12 @@ struct ProviderStatusView: View {
             )
             advertiser.startAdvertising()
             Task { await engine.loadModel() }
-            Task { await engine.fundProviderIfNeeded() }
+            Task {
+                await engine.fundProviderIfNeeded()
+                await engine.retryPendingSettlements()
+                engine.startPeriodicSettlement()
+            }
             engine.startNetworkMonitor()
-            engine.startPeriodicSettlement()
-            Task { await engine.retryPendingSettlements() }
         }
     }
 

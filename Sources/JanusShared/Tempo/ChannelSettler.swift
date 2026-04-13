@@ -125,6 +125,12 @@ public struct ChannelSettler: Sendable {
             let txHash = try await rpc.sendRawTransaction(signedTx: signed)
             let receipt = try await rpc.waitForReceipt(txHash: txHash)
             guard receipt.status else {
+                // Tx reverted — re-check on-chain state to distinguish "already settled" from real failure.
+                // The pre-flight RPC check may have failed, so the tx was submitted blind.
+                if let onChain = try? await escrowClient.getChannel(channelId: channel.channelId),
+                   let onChainSettled = onChain.settled.toUInt64, onChainSettled >= amount {
+                    return .alreadySettled
+                }
                 return .failed(.transactionReverted(txHash: txHash))
             }
             return .settled(txHash: txHash, amount: amount)

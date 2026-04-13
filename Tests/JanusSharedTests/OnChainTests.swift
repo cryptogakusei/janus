@@ -267,7 +267,7 @@ final class OnChainTests: XCTestCase {
     // MARK: - ChannelVerificationResult
 
     func testChannelVerificationResultAccepted() {
-        let onChain = ChannelVerificationResult.acceptedOnChain(onChainDeposit: 1000)
+        let onChain = ChannelVerificationResult.acceptedOnChain(onChainDeposit: 1000, onChainSettled: 0)
         let offChain = ChannelVerificationResult.acceptedOffChainOnly
         let rejected = ChannelVerificationResult.rejected(reason: "bad")
 

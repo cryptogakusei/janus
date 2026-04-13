@@ -45,7 +45,10 @@ class ProviderEngine: ObservableObject {
     @Published var requestLog: [LogEntry] = []
 
     // Session info
-    @Published var activeSessionCount: Int = 0
+    /// Number of sessions with active clients or unsettled credits.
+    var activeSessionCount: Int {
+        channels.filter { sessionToSender[$0.key] != nil || $0.value.unsettledAmount > 0 }.count
+    }
     @Published var totalCreditsEarned: Int = 0
 
     enum ModelStatus: String {
@@ -146,6 +149,8 @@ class ProviderEngine: ObservableObject {
     /// Provider's Ethereum keypair (for Tempo address identity).
     private(set) var providerEthKeyPair: EthKeyPair?
     @Published private(set) var isSettling = false
+    /// When settlement is requested while another is in progress, queue the parameters for re-run.
+    private var pendingSettlementRequest: (isRetry: Bool, removeAfterSettlement: Bool)?
     @Published var settlementIntervalSeconds: Int = 300  // 5 minutes default
     @Published var settlementThreshold: Int = 50          // 50 credits default
     private var settlementTimerTask: Task<Void, Never>?
@@ -184,12 +189,13 @@ class ProviderEngine: ObservableObject {
             // Restore unsettled channels (survive restart for offline settlement)
             if let unsettled = persisted.unsettledChannels, !unsettled.isEmpty {
                 self.channels = unsettled
-                self.activeSessionCount = unsettled.count
                 // Restore identity mappings so clientSummaries groups correctly
                 if let identities = persisted.sessionToIdentity {
                     self.sessionToIdentity = identities
                 }
-                print("Restored \(unsettled.count) unsettled channel(s) from previous session")
+                let totalUnsettled = unsettled.values.reduce(0) { $0 + Int($1.unsettledAmount) }
+                let details = unsettled.map { "\($0.key.prefix(8))...=\($0.value.unsettledAmount)" }.joined(separator: ", ")
+                print("Restored \(unsettled.count) unsettled channel(s) from previous session: \(totalUnsettled) total credits [\(details)]")
             }
             // Restore settlement settings
             if let interval = persisted.settlementIntervalSeconds {
@@ -266,8 +272,25 @@ class ProviderEngine: ObservableObject {
         await settleAllChannelsOnChain()
     }
 
+    /// Maximum age for restored channels before they're discarded as stale (24 hours).
+    private static let channelTTL: TimeInterval = 24 * 60 * 60
+
     /// Retry settlement for any persisted unsettled channels (called on startup and network restore).
     func retryPendingSettlements() async {
+        // Discard channels older than TTL — on-chain channel may be closed, funds unrecoverable
+        let now = Date()
+        let staleIDs = channels.filter { sessionID, channel in
+            guard channel.unsettledAmount > 0 else { return false }
+            guard let lastVoucher = channel.lastVoucherAt else { return false }
+            return now.timeIntervalSince(lastVoucher) > Self.channelTTL
+        }.map(\.key)
+        for sessionID in staleIDs {
+            print("WARNING: Discarding stale channel \(sessionID.prefix(8))... (older than \(Int(Self.channelTTL / 3600))h) — \(channels[sessionID]?.unsettledAmount ?? 0) credits lost")
+            channels.removeValue(forKey: sessionID)
+            sessionToIdentity.removeValue(forKey: sessionID)
+        }
+        if !staleIDs.isEmpty { persistState() }
+
         let unsettledCount = channels.filter { $0.value.unsettledAmount > 0 }.count
         guard unsettledCount > 0 else { return }
         print("Retrying settlement for \(unsettledCount) persisted channel(s)...")
@@ -303,7 +326,11 @@ class ProviderEngine: ObservableObject {
     func startPeriodicSettlement() {
         settlementTimerTask?.cancel()
         let interval = settlementIntervalSeconds
-        guard interval > 0 else { return }  // 0 = disabled
+        guard interval > 0 else {
+            print("Periodic settlement disabled")
+            return
+        }
+        print("Periodic settlement timer started: every \(interval)s (first fire in \(interval)s)")
         settlementTimerTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do {
@@ -325,9 +352,24 @@ class ProviderEngine: ObservableObject {
     /// - Parameter removeAfterSettlement: true to remove settled channels (disconnect path), false to keep them alive (periodic/threshold).
     private func settleAllChannelsOnChain(isRetry: Bool = false, removeAfterSettlement: Bool = true) async {
         // Concurrent settlement guard — isSettling is safe as plain Bool because @MainActor serializes access
-        guard !isSettling else { print("Settlement already in progress, skipping"); return }
+        guard !isSettling else {
+            // Queue this request — will re-run after current settlement completes.
+            // Prefer removeAfterSettlement: true (disconnect) over false (periodic) when merging.
+            let mergedRemove = (pendingSettlementRequest?.removeAfterSettlement ?? false) || removeAfterSettlement
+            let mergedRetry = isRetry && (pendingSettlementRequest?.isRetry ?? true)
+            pendingSettlementRequest = (isRetry: mergedRetry, removeAfterSettlement: mergedRemove)
+            print("Settlement already in progress, queued (remove=\(mergedRemove), retry=\(mergedRetry))")
+            return
+        }
         isSettling = true
-        defer { isSettling = false }
+        defer {
+            isSettling = false
+            // If settlement was requested while we were busy, run it now
+            if let queued = pendingSettlementRequest {
+                pendingSettlementRequest = nil
+                Task { await settleAllChannelsOnChain(isRetry: queued.isRetry, removeAfterSettlement: queued.removeAfterSettlement) }
+            }
+        }
 
         guard let ethKP = providerEthKeyPair, let rpcURL = tempoConfig.rpcURL else { return }
 
@@ -453,7 +495,6 @@ class ProviderEngine: ObservableObject {
         sessionToIdentity.removeValue(forKey: sessionID)
         sessionToSender.removeValue(forKey: sessionID)
         lastResponses.removeValue(forKey: sessionID)
-        activeSessionCount = channels.count
         persistState()
     }
 
@@ -532,18 +573,23 @@ class ProviderEngine: ObservableObject {
             // Only replace channel if it's new or has different params (e.g., new keypair).
             // Preserving the existing channel keeps voucher history (authorizedAmount).
             if existingChannel?.channelId != info.channelId {
-                let channel = Channel(
+                var channel = Channel(
                     payer: info.payerAddress, payee: info.payeeAddress,
                     token: info.tokenAddress, salt: info.salt,
                     authorizedSigner: info.authorizedSigner,
                     deposit: info.deposit, config: tempoConfig
                 )
+                // Initialize settledAmount from on-chain state — critical for reconnecting clients
+                // whose cumulative voucher amounts include previously-settled spend.
+                if case .acceptedOnChain(_, let onChainSettled) = result, onChainSettled > 0 {
+                    channel.recordSettlement(amount: onChainSettled)
+                    print("Initialized settledAmount=\(onChainSettled) from on-chain for session \(request.sessionID.prefix(8))...")
+                }
                 let isUpdate = existingChannel != nil
                 channels[request.sessionID] = channel
-                activeSessionCount = channels.count
                 let verifyStatus: String
                 switch result {
-                case .acceptedOnChain(let deposit): verifyStatus = "on-chain verified (deposit=\(deposit))"
+                case .acceptedOnChain(let deposit, let settled): verifyStatus = "on-chain verified (deposit=\(deposit), settled=\(settled))"
                 case .acceptedOffChainOnly: verifyStatus = "off-chain only"
                 case .rejected: verifyStatus = "rejected"
                 }
@@ -638,8 +684,12 @@ class ProviderEngine: ObservableObject {
         }
 
         // Check aggregate threshold for auto-settlement
-        if settlementThreshold > 0 && pendingSettlementCredits >= settlementThreshold {
-            print("Threshold settlement triggered: \(pendingSettlementCredits) >= \(settlementThreshold)")
+        let pending = pendingSettlementCredits
+        if settlementThreshold > 0 && pending >= settlementThreshold {
+            let breakdown = channels.filter { $0.value.unsettledAmount > 0 }
+                .map { "\($0.key.prefix(8))...=\($0.value.unsettledAmount)" }
+                .joined(separator: ", ")
+            print("Threshold settlement triggered: \(pending) >= \(settlementThreshold) [\(breakdown)]")
             Task { await settleAllChannelsOnChain(isRetry: true, removeAfterSettlement: false) }
         }
 
