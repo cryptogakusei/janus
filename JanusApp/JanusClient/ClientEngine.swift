@@ -171,7 +171,14 @@ class ClientEngine: ObservableObject {
             sessionManager = restored
             responseHistory = restored.history
             if restored.channelOpenedOnChain {
-                // Channel already verified on a previous session — unblock immediately
+                // Channel already verified on a previous session.
+                // Still call setupTempoChannel() to reconstruct the in-memory Channel object —
+                // it is not persisted, only the ETH keypair is. Without it channelInfo is nil
+                // and every request fails with INVALID_SESSION.
+                // openChannelOnChain() will find .alreadyOpen quickly and be a no-op.
+                if restored.channel == nil, let ethAddr = connectedProvider?.providerEthAddress, !ethAddr.isEmpty {
+                    restored.setupTempoChannel(providerEthAddress: ethAddr)
+                }
                 sessionReady = true
             } else {
                 // Channel not yet open — observe until it confirms, then unblock

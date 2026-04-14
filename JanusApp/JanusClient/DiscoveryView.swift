@@ -27,6 +27,8 @@ struct DiscoveryView: View {
                             Text("Start Using Provider")
                         }
                         .buttonStyle(.borderedProminent)
+                    } else {
+                        channelOpeningBanner
                     }
                 } else {
                     emptyStateView
@@ -67,6 +69,35 @@ struct DiscoveryView: View {
     }
 
     // MARK: - Subviews
+
+    private var channelOpeningBanner: some View {
+        let isFailed = engine.channelStatus.contains("failed")
+        return HStack(spacing: 10) {
+            if isFailed {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+            } else {
+                ProgressView().scaleEffect(0.8)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isFailed ? "Channel setup failed" : "Opening payment channel...")
+                    .font(.subheadline.bold())
+                if !engine.channelStatus.isEmpty {
+                    Text(engine.channelStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if isFailed {
+                Button("Retry") { engine.sessionManager?.retryChannelOpenIfNeeded() }
+                    .font(.caption.bold())
+            }
+        }
+        .padding(12)
+        .background(.blue.opacity(0.08))
+        .cornerRadius(10)
+    }
 
     private var walletBadge: some View {
         Group {
