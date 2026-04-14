@@ -24,8 +24,7 @@ final class PersistenceTests: XCTestCase {
             userPubkey: "pubkey-base64",
             providerID: "prov-1",
             maxCredits: 100,
-            expiresAt: Date().addingTimeInterval(3600),
-            backendSignature: "sig-base64"
+            expiresAt: Date().addingTimeInterval(3600)
         )
         try store.save(grant, as: "test_grant.json")
         let loaded = store.load(SessionGrant.self, from: "test_grant.json")
@@ -57,8 +56,7 @@ final class PersistenceTests: XCTestCase {
             userPubkey: kp.publicKeyBase64,
             providerID: "prov-1",
             maxCredits: 50,
-            expiresAt: Date().addingTimeInterval(3600),
-            backendSignature: "sig"
+            expiresAt: Date().addingTimeInterval(3600)
         )
         var spendState = SpendState(sessionID: "sess-client")
         spendState.advance(creditsCharged: 8)
@@ -104,8 +102,7 @@ final class PersistenceTests: XCTestCase {
                 userPubkey: "pub",
                 providerID: "prov",
                 maxCredits: 100,
-                expiresAt: Date().addingTimeInterval(-1), // already expired
-                backendSignature: "sig"
+                expiresAt: Date().addingTimeInterval(-1) // already expired
             ),
             spendState: SpendState(sessionID: "expired")
         )
@@ -184,8 +181,7 @@ final class PersistenceTests: XCTestCase {
             userPubkey: kp.publicKeyBase64,
             providerID: "prov-chan",
             maxCredits: 100,
-            expiresAt: Date().addingTimeInterval(3600),
-            backendSignature: "sig"
+            expiresAt: Date().addingTimeInterval(3600)
         )
         let persisted = PersistedClientSession(
             privateKeyBase64: kp.privateKeyBase64,

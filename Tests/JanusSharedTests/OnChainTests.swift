@@ -189,8 +189,7 @@ final class OnChainTests: XCTestCase {
             userPubkey: kp.publicKeyBase64,
             providerID: "prov-1",
             maxCredits: 100,
-            expiresAt: Date().addingTimeInterval(3600),
-            backendSignature: "sig"
+            expiresAt: Date().addingTimeInterval(3600)
         )
 
         let persisted = PersistedClientSession(
@@ -219,8 +218,7 @@ final class OnChainTests: XCTestCase {
             userPubkey: kp.publicKeyBase64,
             providerID: "prov-1",
             maxCredits: 100,
-            expiresAt: Date().addingTimeInterval(3600),
-            backendSignature: "sig"
+            expiresAt: Date().addingTimeInterval(3600)
         )
 
         let persisted = PersistedClientSession(

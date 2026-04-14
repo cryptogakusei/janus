@@ -1593,7 +1593,7 @@ Full prioritized list of all remaining features across relay, transport, payment
 |---|---------|--------|-------------|---------|
 | 15 | E2E encryption (Relay Phase 4) | Medium-Large | — | ECDH key exchange using existing ETH keypairs. Client and provider establish shared secret; relay sees only opaque bytes. Required before untrusted relays or multi-hop. |
 | 16 | Multi-hop relay + congestion control (Relay Phase 3) | Large | #15 | Messages traverse multiple relays (Client → Relay A → Relay B → Provider). Needs TTL, loop detection, route caching. Congestion control bundled here: relay must break payload opacity to track request/response pairs, manage per-client queues, enforce provider capacity limits, propagate backpressure. Major design change from current stateless forwarding. |
-| 17 | ~~Backend session service (Vapor)~~ — **REDUNDANT** | — | — | Tempo payment channels replaced the need for a centralized session authority. Sessions are now created locally with on-chain payment verification. **Cleanup task:** Remove dead code — `SessionGrant.backendSignature` (always empty string), stale "backend API" comments in `ClientEngine.createSession()` and `SessionManager.create()`, and any remaining Vapor/backend references across the codebase. |
+| 17 | ~~Backend session service (Vapor)~~ — **DONE** | — | — | Tempo payment channels replaced the need for a centralized session authority. Sessions are now created locally with on-chain payment verification. Removed: `JanusBackend/` directory, `SessionGrant.backendSignature`, `SessionGrant.signableFields`, all stale backend doc comments. |
 | 18 | Core Bluetooth L2CAP transport | Large | — | True WiFi-less operation via BLE 5.0 L2CAP channels. ~100KB/s throughput (vs MPC's ~2MB/s). Major rewrite: custom discovery, connection management, reliable delivery. Also serves as the bridge between Apple devices and non-Apple hardware (ESP32, RPi). |
 | 19 | Relay incentives (Relay Phase 5) | Large | #15 | Relays earn payment for forwarding. Options: flat fee per forward, percentage of inference payment, or client opens micro payment channel with relay. Requires E2E encryption so relay can't extract payment info. |
 
@@ -2150,3 +2150,161 @@ Example: Client had 18 credits settled on-chain from previous session. After res
 | Send 21 credits from iPhone 1, then switch to iPhone 2 (threshold=25) | No premature settlement — pending shows correct delta, not inflated cumulative |
 | Periodic timer fires after 5 min from startup cleanup (not app launch) | Correct timing verified |
 | Provider restart → clients reconnect → `settledAmount` initialized from on-chain | Log shows "Initialized settledAmount=N from on-chain" |
+
+---
+
+### Feature #14b: Mandatory On-Chain Channel Handshake Before Inference (2026-04-13)
+
+**Problem:** Provider accepted vouchers from channels it had never verified existed on-chain. A client could skip `openChannel()` entirely, generate a signed voucher against a non-existent channel, and the provider would serve inference so long as the signature was valid. The channel might never settle.
+
+**Implementation:**
+
+1. **`ChannelVerificationResult` split** — `acceptedOffChainOnly` was a single case that conflated two very different situations: "I checked the chain and found nothing" (reject — channel was never opened) vs "I couldn't reach the chain" (accept — supports offline inference after the initial handshake). Replaced with:
+   - `channelNotFoundOnChain` — `isAccepted = false`, provider sends `CHANNEL_NOT_READY` error
+   - `rpcUnavailable` — `isAccepted = true`, accepted to support inference when chain is unreachable after initial handshake
+
+2. **`channelOpenedOnChain` persistence** — Added `channelOpenedOnChain: Bool` field to `PersistedClientSession`. Without this, every app restart would show the channel-opening spinner even for channels already confirmed on-chain.
+
+3. **Combine gating on `SessionManager`** — `sessionReady = true` is now gated on `$channelOpenedOnChain.filter { $0 }.first()`. This means the "Start Using Provider" button in `DiscoveryView`/`DualModeView` doesn't appear until the channel is confirmed on-chain (first connect) or restored from persistence (subsequent connects).
+
+4. **Provider defense** — `ProviderEngine` replaced the `guard result.isAccepted` catch-all with an explicit switch, returning `CHANNEL_NOT_READY` for `channelNotFoundOnChain` and passing through `rpcUnavailable` and `acceptedOnChain`.
+
+**Plan doc:** `docs/plans/14b-mandatory-channel-handshake.md`
+
+#### Bug: INVALID_SESSION on every request after restore
+
+**Symptom:** All inference requests returned INVALID_SESSION immediately after provider had been serving correctly on a prior session.
+
+**Root cause:** `createSession()` in `ClientEngine` fast-pathed `channelOpenedOnChain == true` cases to `sessionReady = true` without calling `setupTempoChannel()`. The `Channel` object is not persisted (only `ethPrivateKeyHex` is), so `channel = nil` after every app restart. With `channel == nil`, `channelInfo` was nil, and the provider received requests with no channel data.
+
+**Fix:** Always call `setupTempoChannel()` when `channel == nil`, even in the "already opened" fast path — always before setting `sessionReady = true`.
+
+#### Bug: Channel-opening progress banner never visible
+
+**Symptom:** Users went directly from "Searching..." to "Start Using Provider" with no intermediate state showing channel setup progress.
+
+**Root cause:** The `reconnectingBanner` inside `PromptView` gated on `!sessionReady` is unreachable during initial setup — `DiscoveryView` and `DualModeView` only navigate to `PromptView` when `engine.sessionReady == true`.
+
+**Fix:** Added `channelOpeningBanner` directly in the `else` branch of the `sessionReady` check in both `DiscoveryView` and `DualModeView`. Shows a spinner + "Opening payment channel..." + `engine.channelStatus` sub-label. On failure: warning icon + "Channel setup failed" + Retry button.
+
+#### Files changed
+
+| File | Changes |
+|------|---------|
+| `Sources/JanusShared/Verification/VoucherVerifier.swift` | Split `acceptedOffChainOnly` into `channelNotFoundOnChain` and `rpcUnavailable` |
+| `Sources/JanusShared/Persistence/SessionStore.swift` | Added `channelOpenedOnChain: Bool` to `PersistedClientSession` |
+| `Sources/JanusShared/Protocol/ErrorResponse.swift` | Added `channelNotReady` error code |
+| `Sources/JanusShared/Tempo/ChannelOpener.swift` | Added `progressHandler` closure parameter |
+| `JanusApp/JanusClient/SessionManager.swift` | Publish `channelOpenedOnChain`, persist it, wire progress handler |
+| `JanusApp/JanusClient/ClientEngine.swift` | `observeChannelOpening()` Combine helper, fix `setupTempoChannel()` call on restore, `channelStatus` forwarding |
+| `JanusApp/JanusClient/DiscoveryView.swift` | Add `channelOpeningBanner` in `!sessionReady` branch |
+| `JanusApp/JanusClient/DualModeView.swift` | Same `channelOpeningBanner` pattern |
+| `JanusApp/JanusClient/PromptView.swift` | Update `reconnectingBanner` for mid-session reconnects |
+| `JanusApp/JanusProvider/ProviderEngine.swift` | Explicit switch on `ChannelVerificationResult`, send `CHANNEL_NOT_READY` |
+| `Tests/JanusSharedTests/OnChainTests.swift` | Updated for new enum cases, added progress handler test |
+| `Tests/JanusSharedTests/VoucherFlowTests.swift` | Added zero-network `rpcUnavailable` path test |
+| `Tests/JanusSharedTests/PersistenceTests.swift` | Added `channelOpenedOnChain` round-trip and backward-compat tests |
+
+#### Testing (2 iPhones + Mac provider)
+
+| Test | Result |
+|------|--------|
+| Fresh install iPhone 16 — channel opening from scratch | "Funding wallet..." banner visible, faucet failed → retry → succeeded, "Start Using Provider" appeared. Note: faucet failure was likely happening silently before #14b — the banner made it visible for the first time. Retry path (`retryChannelOpenIfNeeded`) pre-existed; #14b just surfaced the failure instead of swallowing it. |
+| Subsequent connect (channel already on-chain) | No banner, "Start Using Provider" immediate |
+| Inference after fresh channel open | Working on both iPhones |
+| Provider receives request with no channel history | `CHANNEL_NOT_READY` returned correctly |
+| Provider restart → client reconnect | No banner on reconnect (fast path correct), inference working. Settlement after reconnect failed twice with testnet RPC timeouts ("failed to get gas info") but eventually succeeded — retry queue from #13 kept firing until RPC cooperated. Not a code regression; testnet RPC unreliability only. |
+
+**Test suite:** 182 tests passing (2 new: `testVerifyChannelInfoOnChain_returnsRpcUnavailable_whenNoRPCConfigured`, `testChannelOpener_progressHandler_firesBeforeWalletFailure`)
+
+**Commits:** `7112f65`, `554623d`, `a7b58b0`
+
+---
+
+### Fix #15: Provider settledAmount Persistence (2026-04-14)
+
+**Problem:** After settlement, channels with `unsettledAmount == 0` are excluded from `unsettledChannels` persistence. On provider restart + RPC timeout, a fresh `Channel(settledAmount: 0)` was created on reconnect. The client's cumulative voucher amount includes all prior spend, so `unsettledAmount = cumulativeAmount - 0` was inflated — showing phantom pending credits equal to the full prior session spend.
+
+Discovered during #14b manual testing: provider restart → client reconnect → testnet RPC timeouts → pending credits showing the full prior cumulative instead of 0.
+
+**Root cause:** Three distinct paths lost `settledAmount`:
+1. **Disconnect settlement** (`removeAfterSettlement: true`) — channel removed via `removeChannelIfMatch`, no baseline recorded
+2. **TTL eviction** in `retryPendingSettlements()` — `channels.removeValue(forKey:)` called directly, bypassing `removeChannelIfMatch`
+3. **Periodic/threshold settlement** (`removeAfterSettlement: false`) — channel stays in memory but `unsettledAmount == 0` after settlement → filtered out of `persistState()` → baseline lost on restart
+
+**Implementation:**
+- Added `settledChannelAmounts: [String: UInt64]?` (channelId hex → settledAmount) to `PersistedProviderState` with `decodeIfPresent` for backward compat
+- `recordSettledBaseline()` helper called at all three removal sites
+- `persistState()` scans all in-memory channels and upserts their `settledAmount` — covers the periodic/threshold path where channels stay alive after settlement
+- On reconnect with `.rpcUnavailable`: cache consulted, `channel.recordSettlement(cached)` applied before inserting into `channels`
+- On reconnect with `.acceptedOnChain`: on-chain value written back to cache to keep it fresh
+
+**Plan doc:** `docs/plans/15-settled-amount-persistence.md`
+
+#### Files changed
+
+| File | Changes |
+|------|---------|
+| `Sources/JanusShared/Persistence/SessionStore.swift` | Add `settledChannelAmounts` field, `init` param, `decodeIfPresent` |
+| `JanusApp/JanusProvider/ProviderEngine.swift` | In-memory dict, restore on init, `recordSettledBaseline()` helper, `persistState()` scan, apply on reconnect, cache sync on `acceptedOnChain` |
+| `Tests/JanusSharedTests/PersistenceTests.swift` | 3 new tests: round-trip, backward compat, unsettledAmount correctness after cache recovery |
+
+#### Testing (Mac provider + iPhone)
+
+| Test | Result |
+|------|--------|
+| Run 18 credits of inference → disconnect → restart provider → reconnect iPhone | `settledChannelAmounts: {"0x07903c...": 18}` confirmed in `provider_state.json` after settlement. Pending showed 0 on reconnect — cache applied correctly. |
+
+**Test suite:** 185 tests passing (3 new)
+
+**Commit:** `51c2076`
+
+---
+
+## 2026-04-14
+
+### Feature #17: Backend Dead Code Removal
+
+#### Problem
+
+The original Janus design included a Vapor backend that issued signed session grants — the backend's Ed25519 signature on each `SessionGrant` was the trust anchor. This was fully superseded by Tempo on-chain payment channels: sessions are now created locally, trust comes from on-chain channel verification, and the backend signature was never set (always `""`) or verified.
+
+Dead code was accumulating confusion across the codebase.
+
+#### What Was Removed
+
+| Item | Location | Why dead |
+|------|----------|----------|
+| `JanusBackend/` directory (4 files) | `JanusBackend/` | Standalone Vapor package — not in `Package.swift`, references nonexistent `DemoConfig`, zero callers in main project |
+| `SessionGrant.backendSignature` | `SessionGrant.swift` | Always set to `""` in `SessionManager.create()`, never read or verified anywhere |
+| `SessionGrant.signableFields` | `SessionGrant.swift` | Only called from dead `JanusBackend/Routes.swift` and the test being deleted |
+| Stale "backend API" comments | `ClientEngine.swift:162,195`, `SessionManager.swift:140` | Described a backend API call that never happens |
+| Stale `SessionGrant` doc comment | `SessionGrant.swift:3–7` | Said "issued by the backend" / "The backend signs" — all false after Tempo |
+| Minor stale doc comments | `JanusShared.swift:4`, `VoucherAuthorization.swift:31–33` | Referenced backend model that no longer exists |
+
+#### What Was Kept
+
+- `SessionGrant` struct itself — still carries `maxCredits`, `expiresAt`, `providerID`, `userPubkey` to provider
+- `PromptRequest.sessionGrant` — provider receives session metadata from client on first connect
+- `JanusKeyPair`, `JanusSigner`, `JanusVerifier` — used for provider receipt signing / client verification
+- Raw JSON `"backendSignature"` in backward-compat test fixtures — intentionally kept as regression tests for the synthesized decoder's unknown-key-ignoring behavior
+
+#### Implementation Notes
+
+- `SessionGrant` uses synthesized `Codable` — no custom decoder needed. Old persisted JSON with `"backendSignature"` decodes silently (Swift ignores unknown keys in synthesized decoders).
+- Both a systems architect and architecture reviewer independently caught the same gap in the original plan: 3 test files (`PersistenceTests`, `SessionPersistenceRegressionTests`, `OnChainTests`) had `backendSignature:` in `SessionGrant(...)` constructor calls that would have been compile errors.
+
+#### Files Changed
+
+- `JanusBackend/` — deleted entirely
+- `Sources/JanusShared/Models/SessionGrant.swift` — removed field, init param, signableFields, rewrote doc comment
+- `Sources/JanusShared/JanusShared.swift` — removed "backend" from module doc
+- `Sources/JanusShared/Protocol/VoucherAuthorization.swift` — updated stale framing
+- `JanusApp/JanusClient/ClientEngine.swift` — updated 2 stale comments
+- `JanusApp/JanusClient/SessionManager.swift` — updated comment, removed `backendSignature: ""`
+- `Tests/JanusSharedTests/ProtocolTests.swift` — updated 2 fixtures, deleted `testSessionGrantSignableFields`
+- `Tests/JanusSharedTests/PersistenceTests.swift` — updated 4 init calls
+- `Tests/JanusSharedTests/SessionPersistenceRegressionTests.swift` — updated `makeGrant()` helper
+- `Tests/JanusSharedTests/OnChainTests.swift` — updated 2 init calls
+
+**Test suite:** 184 tests passing (185 − 1 deleted test)

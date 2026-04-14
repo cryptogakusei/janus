@@ -137,7 +137,7 @@ class SessionManager: ObservableObject {
     }
 
     /// Create a new session with a locally-generated identity.
-    /// Payment is handled via Tempo payment channels (not backend grants).
+    /// Trust is established via Tempo on-chain payment channel verification.
     static func create(providerID: String, walletProvider: (any WalletProvider)? = nil, store: JanusStore = .appDefault) async -> SessionManager {
         let kp = JanusKeyPair()
         let sessionID = UUID().uuidString
@@ -149,8 +149,7 @@ class SessionManager: ObservableObject {
             userPubkey: kp.publicKeyBase64,
             providerID: providerID,
             maxCredits: maxCredits,
-            expiresAt: expiresAt,
-            backendSignature: ""
+            expiresAt: expiresAt
         )
 
         let manager = SessionManager(keyPair: kp, grant: grant, walletProvider: walletProvider, store: store)

@@ -28,9 +28,8 @@ public struct VoucherAuthorization: Codable, Sendable {
 
 /// Channel information sent by the client on first request.
 ///
-/// Replaces `SessionGrant` for Tempo-based sessions. Instead of a backend-signed
-/// grant, the client provides the channel parameters so the provider can reconstruct
-/// the channel and verify vouchers.
+/// Supplements `SessionGrant` for Tempo-based sessions. The client provides
+/// channel parameters so the provider can reconstruct the channel and verify vouchers.
 ///
 /// In Step 3b (on-chain), the provider will also verify that this channel exists
 /// on-chain with the claimed deposit. For Step 3a (off-chain), the provider trusts

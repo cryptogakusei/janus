@@ -159,7 +159,7 @@ class ClientEngine: ObservableObject {
     }
 
     /// Create or restore a session for the connected provider.
-    /// Tries to restore a persisted session first; creates a new one via backend API if none found.
+    /// Tries to restore a persisted session first; creates a new one locally via Tempo if none found.
     /// `sessionReady` is gated on on-chain channel confirmation when Tempo is in use.
     func createSession(providerID: String) {
         sessionReady = false
@@ -192,7 +192,7 @@ class ClientEngine: ObservableObject {
             restoreSettlementStatus()
             print("Restored session: \(restored.sessionGrant.sessionID.prefix(8))... (\(restored.remainingCredits) credits left, \(restored.history.count) history)")
         } else {
-            // Request grant from backend (async)
+            // Create session locally with Tempo channel (async)
             Task {
                 let manager = await SessionManager.create(providerID: providerID, walletProvider: walletProvider)
                 // Discard if a newer createSession() has been called (rapid provider switching)

@@ -64,8 +64,7 @@ final class ProtocolTests: XCTestCase {
     func testPromptRequestRoundTrip() throws {
         let grant = SessionGrant(
             sessionID: "s1", userPubkey: "pk1", providerID: "p1",
-            maxCredits: 50, expiresAt: Date(timeIntervalSince1970: 1800000000),
-            backendSignature: "sig1"
+            maxCredits: 50, expiresAt: Date(timeIntervalSince1970: 1800000000)
         )
         let original = PromptRequest(
             requestID: "r1",
@@ -184,7 +183,7 @@ final class ProtocolTests: XCTestCase {
         let expiry = Date(timeIntervalSince1970: 1800000000)
         let original = SessionGrant(
             sessionID: "s1", userPubkey: "pk1", providerID: "p1",
-            maxCredits: 100, expiresAt: expiry, backendSignature: "bsig"
+            maxCredits: 100, expiresAt: expiry
         )
 
         let data = try JSONEncoder.janus.encode(original)
@@ -194,21 +193,6 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(decoded.userPubkey, "pk1")
         XCTAssertEqual(decoded.maxCredits, 100)
         XCTAssertEqual(decoded.expiresAt, expiry)
-    }
-
-    func testSessionGrantSignableFields() {
-        let expiry = Date(timeIntervalSince1970: 1800000000)
-        let grant = SessionGrant(
-            sessionID: "s1", userPubkey: "pk1", providerID: "p1",
-            maxCredits: 100, expiresAt: expiry, backendSignature: "bsig"
-        )
-
-        let fields = grant.signableFields
-        XCTAssertEqual(fields[0], "s1")
-        XCTAssertEqual(fields[1], "pk1")
-        XCTAssertEqual(fields[2], "p1")
-        XCTAssertEqual(fields[3], "100")
-        XCTAssertEqual(fields[4], ISO8601DateFormatter().string(from: expiry))
     }
 
     // MARK: - Receipt

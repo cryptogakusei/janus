@@ -29,8 +29,7 @@ final class SessionPersistenceRegressionTests: XCTestCase {
             userPubkey: JanusKeyPair().publicKeyBase64,
             providerID: providerID,
             maxCredits: maxCredits,
-            expiresAt: Date().addingTimeInterval(3600),
-            backendSignature: "sig-base64"
+            expiresAt: Date().addingTimeInterval(3600)
         )
     }
 
