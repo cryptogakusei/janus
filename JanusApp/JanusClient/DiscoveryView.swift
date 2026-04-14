@@ -3,7 +3,6 @@ import JanusShared
 
 /// Main view: discovers providers, connects, then navigates to prompt entry.
 struct DiscoveryView: View {
-    @ObservedObject var auth: PrivyAuthManager
     @StateObject private var engine = ClientEngine()
     var switchToRelay: (() -> Void)?
     var switchToDual: (() -> Void)?
@@ -40,10 +39,7 @@ struct DiscoveryView: View {
             .navigationTitle("Janus")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    HStack(spacing: 8) {
-                        walletBadge
-                        connectionModeBadge
-                    }
+                    connectionModeBadge
                 }
                 ToolbarItem(placement: .primaryAction) {
                     HStack(spacing: 12) {
@@ -58,13 +54,6 @@ struct DiscoveryView: View {
                     }
                 }
             }
-        }
-        .onAppear {
-            // Inject wallet provider from Privy auth into the engine
-            engine.walletProvider = auth.walletProvider
-        }
-        .onChange(of: auth.walletProvider != nil) { _ in
-            engine.walletProvider = auth.walletProvider
         }
     }
 
@@ -97,25 +86,6 @@ struct DiscoveryView: View {
         .padding(12)
         .background(.blue.opacity(0.08))
         .cornerRadius(10)
-    }
-
-    private var walletBadge: some View {
-        Group {
-            if let addr = auth.walletAddress {
-                Menu {
-                    Text(addr)
-                    Button("Logout") {
-                        Task { await auth.logout() }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "wallet.pass")
-                        Text(String(addr.prefix(6)) + "..." + String(addr.suffix(4)))
-                            .font(.caption.monospaced())
-                    }
-                }
-            }
-        }
     }
 
     private var connectionModeBadge: some View {

@@ -2,13 +2,11 @@ import Foundation
 
 /// Abstracts Ethereum wallet operations needed by the Janus client.
 ///
-/// Two implementations:
-/// - `LocalWalletProvider`: wraps raw `EthKeyPair` (used by provider, tests, and offline fallback)
-/// - `PrivyWalletProvider`: wraps Privy embedded wallet (used by iOS client in production)
+/// Primary implementation: `LocalWalletProvider` — wraps a raw `EthKeyPair` for
+/// offline-capable signing and on-chain transaction sending.
 ///
 /// This protocol lives in JanusShared so both the shared library and the client app
-/// can reference it, but the Privy implementation lives in JanusClient to avoid
-/// pulling the Privy SDK into the provider or test targets.
+/// can reference it without pulling platform-specific SDKs into the provider or test targets.
 public protocol WalletProvider: Sendable {
 
     /// The Ethereum address of this wallet.

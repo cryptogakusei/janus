@@ -10,7 +10,6 @@ private let smokeLog = OSLog(subsystem: "com.janus.client", category: "SmokeTest
 /// Creates a local session grant for identity tracking, then sets up a Tempo
 /// payment channel with the provider. Vouchers are always signed via a local
 /// `EthKeyPair` wrapped in `LocalWalletProvider` — works offline.
-/// Privy (if present) is used for identity/funding only, not signing.
 /// Persists state to disk so sessions survive app restarts.
 @MainActor
 class SessionManager: ObservableObject {
@@ -32,8 +31,6 @@ class SessionManager: ObservableObject {
     private(set) var walletProvider: (any WalletProvider)?
     /// Persisted deposit after top-ups — nil means no top-up has occurred.
     private var lastChannelDeposit: UInt64?
-    /// Privy wallet address for identity/display only (not used for signing).
-    private(set) var privyIdentityAddress: EthAddress?
     private(set) var channel: Channel?
     /// Computed: includes current cumulativeSpend so the provider can detect missed responses.
     var channelInfo: ChannelInfo? {
@@ -87,7 +84,7 @@ class SessionManager: ObservableObject {
     private let providerID: String
 
     /// Try to restore a persisted session for this provider. Returns nil if none exists or expired.
-    static func restore(providerID: String, walletProvider: (any WalletProvider)? = nil, store: JanusStore = .appDefault) -> SessionManager? {
+    static func restore(providerID: String, store: JanusStore = .appDefault) -> SessionManager? {
         // Try per-provider file first, fall back to legacy single file for migration
         let perProviderFile = filename(for: providerID)
         let legacyFile = "client_session.json"
@@ -97,11 +94,11 @@ class SessionManager: ObservableObject {
               persisted.sessionGrant.providerID == providerID else {
             return nil
         }
-        return try? SessionManager(persisted: persisted, walletProvider: walletProvider, store: store)
+        return try? SessionManager(persisted: persisted, store: store)
     }
 
     /// Restore from persisted state.
-    private init(persisted: PersistedClientSession, walletProvider: (any WalletProvider)?, store: JanusStore) throws {
+    private init(persisted: PersistedClientSession, store: JanusStore) throws {
         guard let keyData = Data(base64Encoded: persisted.privateKeyBase64) else {
             throw CryptoError.invalidBase64
         }
@@ -146,17 +143,12 @@ class SessionManager: ObservableObject {
             }
         }
 
-        // Capture Privy identity for display (not used for signing)
-        if let wp = walletProvider {
-            self.privyIdentityAddress = wp.address
-            print("Privy identity present: \(wp.address) (identity only, not used for signing)")
-        }
         // walletProvider is set in setupTempoChannel() — always LocalWalletProvider
     }
 
     /// Create a new session with a locally-generated identity.
     /// Trust is established via Tempo on-chain payment channel verification.
-    static func create(providerID: String, walletProvider: (any WalletProvider)? = nil, store: JanusStore = .appDefault) async -> SessionManager {
+    static func create(providerID: String, store: JanusStore = .appDefault) async -> SessionManager {
         let kp = JanusKeyPair()
         let sessionID = UUID().uuidString
         let maxCredits = 100
@@ -170,24 +162,19 @@ class SessionManager: ObservableObject {
             expiresAt: expiresAt
         )
 
-        let manager = SessionManager(keyPair: kp, grant: grant, walletProvider: walletProvider, store: store)
+        let manager = SessionManager(keyPair: kp, grant: grant, store: store)
         print("Session created: \(sessionID.prefix(8))...")
         return manager
     }
 
     /// Internal init with a pre-created keypair and grant.
-    private init(keyPair: JanusKeyPair, grant: SessionGrant, walletProvider: (any WalletProvider)?, store: JanusStore) {
+    private init(keyPair: JanusKeyPair, grant: SessionGrant, store: JanusStore) {
         self.clientKeyPair = keyPair
         self.clientSigner = JanusSigner(keyPair: keyPair)
         self.sessionGrant = grant
         self.providerID = grant.providerID
         self.spendState = SpendState(sessionID: grant.sessionID)
         self.remainingCredits = grant.maxCredits
-        // Don't store Privy as walletProvider — setupTempoChannel() always sets LocalWalletProvider.
-        // Capture Privy address for identity/display only.
-        if let wp = walletProvider {
-            self.privyIdentityAddress = wp.address
-        }
         self.store = store
         persist()
     }
@@ -197,7 +184,6 @@ class SessionManager: ObservableObject {
     ///
     /// Always uses the local `EthKeyPair` as both payer and authorizedSigner.
     /// This ensures voucher signing works offline (pure local secp256k1 crypto).
-    /// Privy (if present) is identity/funding only — not involved in the payment channel.
     func setupTempoChannel(providerEthAddress: String) {
         let payerAddress: EthAddress
         let signerAddress: EthAddress
@@ -221,17 +207,12 @@ class SessionManager: ObservableObject {
         print("CLIENT ETH ADDRESS (payer): \(addr)")
 
         // Always use local key as authorizedSigner — works offline.
-        // Privy wallet (if present) is identity/funding only.
         signerAddress = ethKP.address
         self.walletProvider = LocalWalletProvider(keyPair: ethKP, rpcURL: tempoConfig.rpcURL)
 
         let sigAddr = ethKP.address.checksumAddress
         os_log("CLIENT_SIGNER_ADDRESS=%{public}@ (local key, offline-capable)", log: smokeLog, type: .default, sigAddr)
         print("CLIENT SIGNER ADDRESS (local, offline-capable): \(sigAddr)")
-
-        if let privyAddr = privyIdentityAddress {
-            os_log("CLIENT_PRIVY_IDENTITY=%{public}@", log: smokeLog, type: .default, privyAddr.checksumAddress)
-        }
 
         guard let providerAddr = try? EthAddress(hex: providerEthAddress) else {
             print("Invalid provider Ethereum address: \(providerEthAddress)")
@@ -260,7 +241,6 @@ class SessionManager: ObservableObject {
         persist()
 
         // Open channel on-chain using local key (async, non-blocking)
-        // Always use LocalWalletProvider for on-chain ops — Privy can't send to custom chains
         let onChainWallet = LocalWalletProvider(keyPair: ethKP, rpcURL: tempoConfig.rpcURL)
         Task { await openChannelOnChain(wallet: onChainWallet, channel: ch) }
     }
@@ -323,7 +303,6 @@ class SessionManager: ObservableObject {
     }
 
     /// Create a signed VoucherAuthorization for the given quote (Tempo path).
-    /// Async because WalletProvider signing may be a network call (e.g. Privy MPC).
     func createVoucherAuthorization(requestID: String, quoteID: String, priceCredits: Int) async throws -> VoucherAuthorization {
         guard let wp = walletProvider, let ch = channel else {
             throw CryptoError.verificationFailed

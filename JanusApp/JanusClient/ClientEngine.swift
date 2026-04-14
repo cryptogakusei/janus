@@ -59,10 +59,6 @@ class ClientEngine: ObservableObject {
     private var requestTimeoutTask: Task<Void, Never>?
     private var sessionCreationGeneration = 0
 
-    /// Optional wallet provider injected from Privy auth.
-    /// When set, SessionManager uses it for voucher signing and on-chain ops.
-    var walletProvider: (any WalletProvider)?
-
     convenience init() {
         self.init(transport: CompositeTransport())
     }
@@ -167,7 +163,7 @@ class ClientEngine: ObservableObject {
         sessionCreationGeneration += 1
         let expectedGeneration = sessionCreationGeneration
 
-        if let restored = SessionManager.restore(providerID: providerID, walletProvider: walletProvider) {
+        if let restored = SessionManager.restore(providerID: providerID) {
             sessionManager = restored
             responseHistory = restored.history
             if restored.channelOpenedOnChain {
@@ -195,7 +191,7 @@ class ClientEngine: ObservableObject {
         } else {
             // Create session locally with Tempo channel (async)
             Task {
-                let manager = await SessionManager.create(providerID: providerID, walletProvider: walletProvider)
+                let manager = await SessionManager.create(providerID: providerID)
                 // Discard if a newer createSession() has been called (rapid provider switching)
                 guard sessionCreationGeneration == expectedGeneration else {
                     print("Discarding stale session creation for \(providerID.prefix(8))...")

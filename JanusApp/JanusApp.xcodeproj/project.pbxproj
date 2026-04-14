@@ -26,10 +26,6 @@
 		C200000008 /* BonjourAdvertiser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000009 /* BonjourAdvertiser.swift */; };
 		C200000009 /* CompositeAdvertiser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000010 /* CompositeAdvertiser.swift */; };
 
-		/* Privy auth files */
-		C100000007 /* PrivyAuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000008 /* PrivyAuthManager.swift */; };
-		C100000008 /* PrivyWalletProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000009 /* PrivyWalletProvider.swift */; };
-		C100000009 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000010 /* LoginView.swift */; };
 		C100000010 /* MPCRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000011 /* MPCRelay.swift */; };
 		C100000011 /* RelayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000012 /* RelayView.swift */; };
 		C100000012 /* ProviderTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000013 /* ProviderTransport.swift */; };
@@ -44,8 +40,6 @@
 		C300000002 /* JanusShared in Frameworks */ = {isa = PBXBuildFile; productRef = D100000002 /* JanusShared */; };
 		C300000003 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = D200000001 /* MLXLLM */; };
 		C300000004 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = D200000002 /* MLXLMCommon */; };
-		C300000005 /* Privy in Frameworks */ = {isa = PBXBuildFile; productRef = D300000001 /* Privy */; };
-
 		/* JanusClientTests files */
 		C400000001 /* ClientEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000001 /* ClientEngineTests.swift */; };
 		C400000002 /* ConnectionModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000002 /* ConnectionModeTests.swift */; };
@@ -67,9 +61,6 @@
 		A100000005 /* SessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManager.swift; sourceTree = "<group>"; };
 		A100000006 /* ClientEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClientEngine.swift; sourceTree = "<group>"; };
 		A100000007 /* PromptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptView.swift; sourceTree = "<group>"; };
-		A100000008 /* PrivyAuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivyAuthManager.swift; sourceTree = "<group>"; };
-		A100000009 /* PrivyWalletProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivyWalletProvider.swift; sourceTree = "<group>"; };
-		A100000010 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		A100000011 /* MPCRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPCRelay.swift; sourceTree = "<group>"; };
 		A100000012 /* RelayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayView.swift; sourceTree = "<group>"; };
 		A100000013 /* ProviderTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderTransport.swift; sourceTree = "<group>"; };
@@ -113,7 +104,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				C300000001 /* JanusShared in Frameworks */,
-				C300000005 /* Privy in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -157,9 +147,6 @@
 				A100000005 /* SessionManager.swift */,
 				A100000006 /* ClientEngine.swift */,
 				A100000007 /* PromptView.swift */,
-				A100000008 /* PrivyAuthManager.swift */,
-				A100000009 /* PrivyWalletProvider.swift */,
-				A100000010 /* LoginView.swift */,
 				A100000011 /* MPCRelay.swift */,
 				A100000012 /* RelayView.swift */,
 				A100000013 /* ProviderTransport.swift */,
@@ -232,7 +219,6 @@
 			name = JanusClient;
 			packageProductDependencies = (
 				D100000001 /* JanusShared */,
-				D300000001 /* Privy */,
 			);
 			productName = JanusClient;
 			productReference = B100000001 /* JanusClient.app */;
@@ -318,7 +304,6 @@
 			mainGroup = E000000000;
 			packageReferences = (
 				R000000001 /* XCLocalSwiftPackageReference ".." */,
-				R000000002 /* XCRemoteSwiftPackageReference "privy-ios" */,
 			);
 			productRefGroup = E300000000 /* Products */;
 			projectDirPath = "";
@@ -342,9 +327,6 @@
 				C100000004 /* SessionManager.swift in Sources */,
 				C100000005 /* ClientEngine.swift in Sources */,
 				C100000006 /* PromptView.swift in Sources */,
-				C100000007 /* PrivyAuthManager.swift in Sources */,
-				C100000008 /* PrivyWalletProvider.swift in Sources */,
-				C100000009 /* LoginView.swift in Sources */,
 				C100000010 /* MPCRelay.swift in Sources */,
 				C100000011 /* RelayView.swift in Sources */,
 				C100000012 /* ProviderTransport.swift in Sources */,
@@ -635,17 +617,6 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		R000000002 /* XCRemoteSwiftPackageReference "privy-ios" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/privy-io/privy-ios";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.10.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
 /* Begin XCSwiftPackageProductDependency section */
 		D100000001 /* JanusShared */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -671,11 +642,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = R000000001 /* XCLocalSwiftPackageReference ".." */;
 			productName = JanusShared;
-		};
-		D300000001 /* Privy */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = R000000002 /* XCRemoteSwiftPackageReference "privy-ios" */;
-			productName = Privy;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -5,15 +5,13 @@ import JanusShared
 ///
 /// Layout: compact relay stats bar at top, full client UI below.
 struct DualModeView: View {
-    @ObservedObject var auth: PrivyAuthManager
     @ObservedObject private var relay: MPCRelay
     @ObservedObject private var engine: ClientEngine
     var switchToClient: (() -> Void)?
     var switchToRelay: (() -> Void)?
 
-    init(auth: PrivyAuthManager, relay: MPCRelay, engine: ClientEngine,
+    init(relay: MPCRelay, engine: ClientEngine,
          switchToClient: (() -> Void)? = nil, switchToRelay: (() -> Void)? = nil) {
-        self.auth = auth
         self.relay = relay
         self.engine = engine
         self.switchToClient = switchToClient
@@ -30,10 +28,7 @@ struct DualModeView: View {
             .navigationTitle("Janus Dual")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    HStack(spacing: 8) {
-                        walletBadge
-                        dualModeBadge
-                    }
+                    dualModeBadge
                 }
                 ToolbarItem(placement: .primaryAction) {
                     settingsMenu
@@ -41,13 +36,9 @@ struct DualModeView: View {
             }
         }
         .onAppear {
-            engine.walletProvider = auth.walletProvider
             if !relay.isRunning {
                 relay.start()
             }
-        }
-        .onChange(of: auth.walletProvider != nil) { _ in
-            engine.walletProvider = auth.walletProvider
         }
     }
 
@@ -275,25 +266,6 @@ struct DualModeView: View {
     }
 
     // MARK: - Toolbar items
-
-    private var walletBadge: some View {
-        Group {
-            if let addr = auth.walletAddress {
-                Menu {
-                    Text(addr)
-                    Button("Logout") {
-                        Task { await auth.logout() }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "wallet.pass")
-                        Text(String(addr.prefix(6)) + "..." + String(addr.suffix(4)))
-                            .font(.caption.monospaced())
-                    }
-                }
-            }
-        }
-    }
 
     private var dualModeBadge: some View {
         Text("Dual")
