@@ -187,6 +187,25 @@ final class VoucherFlowTests: XCTestCase {
         XCTAssertTrue(verifier.verifyChannelInfo(info))
     }
 
+    func testVerifyChannelInfoOnChain_returnsRpcUnavailable_whenNoRPCConfigured() async throws {
+        // Build a config without an RPC URL — verifyChannelInfoOnChain should
+        // immediately return .rpcUnavailable without touching the network.
+        let noRPCConfig = TempoConfig(
+            escrowContract: config.escrowContract,
+            paymentToken: config.paymentToken,
+            chainId: config.chainId,
+            rpcURL: nil
+        )
+        let offChainVerifier = VoucherVerifier(providerAddress: providerKP.address, config: noRPCConfig)
+        let info = ChannelInfo(channel: channel, config: noRPCConfig)
+
+        let result = await offChainVerifier.verifyChannelInfoOnChain(info)
+
+        if case .rpcUnavailable = result { /* pass */ }
+        else { XCTFail("Expected .rpcUnavailable, got \(result)") }
+        XCTAssertTrue(result.isAccepted, ".rpcUnavailable must be accepted (supports offline inference)")
+    }
+
     func testChannelInfoRejectsWrongPayee() throws {
         // Create channel info claiming a different provider
         let otherProvider = try EthKeyPair()

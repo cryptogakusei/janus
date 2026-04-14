@@ -264,6 +264,48 @@ final class OnChainTests: XCTestCase {
         XCTAssertEqual(loaded.sessionGrant.sessionID, "old-sess")
     }
 
+    // MARK: - ChannelOpener progress handler
+
+    func testChannelOpener_progressHandler_firesBeforeWalletFailure() async throws {
+        let clientKP = try EthKeyPair()
+        // UUID salt ensures a fresh channel ID each run — avoids .alreadyOpen early return
+        // which would skip the progress handler entirely.
+        let salt = Keccak256.hash(Data(UUID().uuidString.utf8))
+        let channel = Channel(
+            payer: clientKP.address,
+            payee: clientKP.address,
+            token: TempoConfig.testnet.paymentToken,
+            salt: salt,
+            authorizedSigner: clientKP.address,
+            deposit: 10,
+            config: TempoConfig.testnet
+        )
+
+        let mockWallet = MockWalletProvider(keyPair: clientKP)
+        let opener = ChannelOpener(config: TempoConfig.testnet)
+        var receivedMessages: [String] = []
+
+        let result = await opener.openChannel(wallet: mockWallet, channel: channel) { message in
+            receivedMessages.append(message)
+        }
+
+        // MockWalletProvider always throws on sendTransaction — expect .failed
+        if case .failed = result { /* expected */ }
+        else { XCTFail("Expected .failed, got \(result)") }
+
+        // "Funding wallet..." and "Approving token spend..." fire before sendTransaction is called.
+        // "Opening payment channel..." requires a successful approve tx receipt — not reachable with mock.
+        XCTAssertTrue(receivedMessages.contains("Funding wallet..."),
+                      "Progress handler must emit 'Funding wallet...'")
+        XCTAssertTrue(receivedMessages.contains("Approving token spend..."),
+                      "Progress handler must emit 'Approving token spend...'")
+
+        // Verify emission order
+        let fundingIdx = receivedMessages.firstIndex(of: "Funding wallet...")!
+        let approveIdx = receivedMessages.firstIndex(of: "Approving token spend...")!
+        XCTAssertLessThan(fundingIdx, approveIdx, "Progress messages must fire in stage order")
+    }
+
     // MARK: - ChannelVerificationResult
 
     func testChannelVerificationResultAccepted() {
