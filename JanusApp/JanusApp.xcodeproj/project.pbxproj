@@ -36,6 +36,8 @@
 		C100000014 /* DualModeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000015 /* DualModeView.swift */; };
 		C100000015 /* BonjourBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000016 /* BonjourBrowser.swift */; };
 		C100000016 /* CompositeTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000017 /* CompositeTransport.swift */; };
+		C100000017 /* JanusWalletKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000018 /* JanusWalletKeychain.swift */; };
+		C400000009 /* WalletKeychainTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000009 /* WalletKeychainTests.swift */; };
 
 		/* SPM product refs */
 		C300000001 /* JanusShared in Frameworks */ = {isa = PBXBuildFile; productRef = D100000001 /* JanusShared */; };
@@ -74,6 +76,8 @@
 		A100000015 /* DualModeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DualModeView.swift; sourceTree = "<group>"; };
 		A100000016 /* BonjourBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BonjourBrowser.swift; sourceTree = "<group>"; };
 		A100000017 /* CompositeTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompositeTransport.swift; sourceTree = "<group>"; };
+		A100000018 /* JanusWalletKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusWalletKeychain.swift; sourceTree = "<group>"; };
+		A300000009 /* WalletKeychainTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletKeychainTests.swift; sourceTree = "<group>"; };
 
 		/* JanusProvider source files */
 		A200000001 /* JanusProviderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusProviderApp.swift; sourceTree = "<group>"; };
@@ -162,6 +166,7 @@
 				A100000015 /* DualModeView.swift */,
 				A100000016 /* BonjourBrowser.swift */,
 				A100000017 /* CompositeTransport.swift */,
+				A100000018 /* JanusWalletKeychain.swift */,
 				A100000004 /* Info.plist */,
 			);
 			path = JanusClient;
@@ -205,6 +210,7 @@
 				A300000006 /* TCPFramingTests.swift */,
 				A300000007 /* BonjourTransportTests.swift */,
 				A300000008 /* OfflineVoucherTests.swift */,
+				A300000009 /* WalletKeychainTests.swift */,
 			);
 			path = JanusClientTests;
 			sourceTree = "<group>";
@@ -345,6 +351,7 @@
 				C100000014 /* DualModeView.swift in Sources */,
 				C100000015 /* BonjourBrowser.swift in Sources */,
 				C100000016 /* CompositeTransport.swift in Sources */,
+				C100000017 /* JanusWalletKeychain.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -376,6 +383,7 @@
 				C400000006 /* TCPFramingTests.swift in Sources */,
 				C400000007 /* BonjourTransportTests.swift in Sources */,
 				C400000008 /* OfflineVoucherTests.swift in Sources */,
+				C400000009 /* WalletKeychainTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

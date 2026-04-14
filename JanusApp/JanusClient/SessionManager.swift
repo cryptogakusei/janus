@@ -123,6 +123,12 @@ class SessionManager: ObservableObject {
                 let ethKP = try EthKeyPair(hexPrivateKey: ethHex)
                 self.ethKeyPair = ethKP
                 print("Restored ETH keypair: \(ethKP.address)")
+                // Promote to Keychain on first launch after Keychain feature ships.
+                // Guard prevents redundant writes on every subsequent restore.
+                if JanusWalletKeychain.load() == nil {
+                    JanusWalletKeychain.save(ethKP)
+                    print("Migrated ETH keypair to Keychain: \(ethKP.address)")
+                }
             } catch {
                 print("WARNING: Failed to restore ETH keypair: \(error). A new key will be generated, which may orphan an existing on-chain channel.")
             }
@@ -184,14 +190,15 @@ class SessionManager: ObservableObject {
         let payerAddress: EthAddress
         let signerAddress: EthAddress
 
-        // Always create/restore a local ETH keypair for on-chain transactions (payer)
+        // Always create/restore a local ETH keypair for on-chain transactions (payer).
+        // Migration from JSON → Keychain happens in init(persisted:), not here.
         let ethKP: EthKeyPair
         if let existing = self.ethKeyPair {
             ethKP = existing
-        } else if let newKP = try? EthKeyPair() {
-            ethKP = newKP
+        } else if let keychainKP = JanusWalletKeychain.loadOrCreate() {
+            ethKP = keychainKP
         } else {
-            print("Failed to create Ethereum keypair")
+            print("SessionManager: ETH key unavailable — cannot set up Tempo channel")
             return
         }
         self.ethKeyPair = ethKP
