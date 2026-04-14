@@ -1579,7 +1579,7 @@ Full prioritized list of all remaining features across relay, transport, payment
 | # | Feature | Effort | Dependencies | Details |
 |---|---------|--------|-------------|---------|
 | 10 | ~~SettlementNotice message~~ → **On-chain settlement verification** | Small | — | **DONE.** Client reads blockchain directly via `EscrowClient.getChannel()` to verify provider settlement. Three-state comparison: match (green), overpayment (red), underpayment/partial (orange). Pull-only design — no provider changes needed. Push notification deferred to v2 (needs store-and-forward for disconnected clients). |
-| 11 | Channel top-up | Small-Medium | — | Add funds to existing channel without opening a new one. Depends on whether TempoStreamChannel contract supports it. Swift side needs a top-up flow in ChannelOpener. |
+| 11 | Channel top-up + wallet funding | Medium | — | Three subgoals in sequence: **(11a) Wallet key persistence** — persist the local ETH keypair to iCloud Keychain so it survives app deletion/reinstall before any real money is involved. **(11b) Channel top-up** — check whether TempoStreamChannel supports `increaseDeposit()`; if yes, add top-up flow in Swift (approve + increaseDeposit); if no, settle + reopen. **(11c) Funding UX** — show local wallet address + QR code so user can transfer tokens from an external wallet (MVP); third-party on-ramp SDK (MoonPay/Transak) as a follow-up. No Tempo-native on-ramp exists. |
 | 12 | Multi-channel management UI | Small | — | View/manage channels with multiple providers. Currently one provider, one channel. |
 | 12a | ~~Fix first-query failure after provider switch~~ | Small | — | **DONE.** Generation counter in `createSession()` discards stale async results. `canSubmit` gated on `sessionReady` (not just `connectedProvider`). Defense-in-depth guard in `submitRequest()`. |
 | 13 | ~~Periodic & threshold-based settlement~~ | Small | — | **DONE.** Provider settles on a configurable timer (default 5 min) and/or when aggregate unsettled credits cross a threshold (default 50). Provider UI with segmented pickers. Persisted settings survive restart. Bug fix: `settledAmount` desync after provider restart caused inflated `unsettledAmount` and premature threshold triggers — fixed by initializing `settledAmount` from on-chain state during channel verification. Additional hardening: startup race fix (fund→retry→timer ordering), settlement queuing (no dropped disconnect requests), 24h TTL on stale channels, zombie channel prevention (re-check on-chain after tx revert), computed `activeSessionCount`. |
@@ -2308,3 +2308,40 @@ Dead code was accumulating confusion across the codebase.
 - `Tests/JanusSharedTests/OnChainTests.swift` — updated 2 init calls
 
 **Test suite:** 184 tests passing (185 − 1 deleted test)
+
+---
+
+## 2026-04-14 (continued)
+
+### Feature #11a: Wallet Key Persistence (Keychain)
+
+#### Problem
+
+The client's ETH keypair was stored as a plain hex string in `client_session_{providerID}.json` in Application Support. On app reinstall, this file is deleted — the key is lost, the on-chain channel is orphaned with stranded funds. Prerequisite for real-money channel funding.
+
+#### Solution
+
+Added `JanusWalletKeychain` — a thin `SecItem` wrapper that stores the ETH private key (raw 32 bytes) in the device Keychain with `kSecAttrAccessibleAfterFirstUnlock` (supports background channel operations). One stable key per device, shared across all sessions and providers.
+
+- `loadOrCreate()` — loads existing Keychain key or generates+saves a fresh one
+- `save()` — add-then-update pattern, explicit `kSecAttrSynchronizable: false`, logs `OSStatus` on failure
+- `delete()` — for test tearDown isolation
+
+Migration path: `SessionManager.init(persisted:)` promotes the JSON-restored key to Keychain on first launch (`load() == nil` guard prevents redundant writes on subsequent restarts).
+
+#### Files Changed
+
+- `JanusApp/JanusClient/JanusWalletKeychain.swift` — new Keychain helper
+- `JanusApp/JanusClient/SessionManager.swift` — migration in `init(persisted:)`; `setupTempoChannel()` uses `loadOrCreate()` instead of `try? EthKeyPair()`
+- `JanusApp/JanusClientTests/WalletKeychainTests.swift` — 4 unit tests with per-test UUID Keychain namespacing
+- `JanusApp/JanusApp.xcodeproj/project.pbxproj` — added both new files to target
+
+#### Verification
+
+Definitive reinstall test passed:
+- Connected → payer address `0x5DA773e51086C77d23aF24443B48675Aa6f595c1`
+- App uninstalled (wiped session JSON) + reinstalled → reconnected
+- Payer address: `0x5DA773e51086C77d23aF24443B48675Aa6f595c1` ✓ (same)
+- New `sessionID` confirmed JSON was wiped; key came from Keychain only
+
+**Commit:** `b28b409`
