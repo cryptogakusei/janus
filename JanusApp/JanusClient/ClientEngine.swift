@@ -19,6 +19,8 @@ class ClientEngine: ObservableObject {
     @Published var connectedProvider: ServiceAnnounce?
     @Published var connectionMode: ConnectionMode = .disconnected
     @Published var sessionReady = false
+    /// On-chain channel opening progress (e.g. "Funding wallet...", "Approving token...").
+    @Published var channelStatus: String = ""
     /// All providers available via relay (empty when direct-connected or only one provider).
     @Published var availableProviders: [ServiceAnnounce] = []
 
@@ -94,6 +96,7 @@ class ClientEngine: ObservableObject {
                     }
                     // Don't nil sessionManager — it's persisted and can be reused on reconnect
                     self?.sessionReady = false
+                    self?.channelStatus = ""
                     self?.connectionMode = .disconnected
                 }
             }
@@ -157,22 +160,28 @@ class ClientEngine: ObservableObject {
 
     /// Create or restore a session for the connected provider.
     /// Tries to restore a persisted session first; creates a new one via backend API if none found.
+    /// `sessionReady` is gated on on-chain channel confirmation when Tempo is in use.
     func createSession(providerID: String) {
         sessionReady = false
+        channelStatus = ""
         sessionCreationGeneration += 1
         let expectedGeneration = sessionCreationGeneration
 
         if let restored = SessionManager.restore(providerID: providerID, walletProvider: walletProvider) {
             sessionManager = restored
             responseHistory = restored.history
-            // Set up Tempo channel if not already set up
-            if restored.channel == nil, let ethAddr = connectedProvider?.providerEthAddress, !ethAddr.isEmpty {
-                restored.setupTempoChannel(providerEthAddress: ethAddr)
+            if restored.channelOpenedOnChain {
+                // Channel already verified on a previous session — unblock immediately
+                sessionReady = true
             } else {
-                // Retry opening on-chain if previous attempt was interrupted
-                restored.retryChannelOpenIfNeeded()
+                // Channel not yet open — observe until it confirms, then unblock
+                observeChannelOpening(on: restored)
+                if restored.channel == nil, let ethAddr = connectedProvider?.providerEthAddress, !ethAddr.isEmpty {
+                    restored.setupTempoChannel(providerEthAddress: ethAddr)
+                } else {
+                    restored.retryChannelOpenIfNeeded()
+                }
             }
-            sessionReady = true
             restoreSettlementStatus()
             print("Restored session: \(restored.sessionGrant.sessionID.prefix(8))... (\(restored.remainingCredits) credits left, \(restored.history.count) history)")
         } else {
@@ -184,16 +193,34 @@ class ClientEngine: ObservableObject {
                     print("Discarding stale session creation for \(providerID.prefix(8))...")
                     return
                 }
-                // Set up Tempo channel if provider supports it
                 if let ethAddr = connectedProvider?.providerEthAddress, !ethAddr.isEmpty {
+                    // Gate sessionReady on channel confirmation
+                    observeChannelOpening(on: manager)
                     manager.setupTempoChannel(providerEthAddress: ethAddr)
+                } else {
+                    // No Tempo channel — unblock immediately
+                    sessionReady = true
                 }
                 sessionManager = manager
                 responseHistory = []
                 settlementStatus = .unverified
-                sessionReady = true
             }
         }
+    }
+
+    /// Subscribe to a SessionManager's channel state and forward to published properties.
+    /// Sets `sessionReady = true` once the channel opens on-chain.
+    private func observeChannelOpening(on manager: SessionManager) {
+        manager.$channelOnChainStatus
+            .receive(on: RunLoop.main)
+            .assign(to: &$channelStatus)
+
+        manager.$channelOpenedOnChain
+            .filter { $0 }
+            .first()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.sessionReady = true }
+            .store(in: &cancellables)
     }
 
     /// Submit a prompt request to the connected provider.
@@ -406,6 +433,14 @@ class ClientEngine: ObservableObject {
 
     private func handleError(_ error: ErrorResponse) {
         cancelRequestTimeout()
+        if error.errorCode == .channelNotReady {
+            // Race window: channel opened between client check and provider check — silently retry
+            requestState = .idle
+            pendingRequestID = nil
+            pendingTaskType = nil
+            pendingPromptText = nil
+            return
+        }
         errorMessage = "[\(error.errorCode.rawValue)] \(error.errorMessage)"
         requestState = .error
         pendingRequestID = nil

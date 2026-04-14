@@ -174,6 +174,29 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(loaded?.spendState.cumulativeSpend, 15)
         XCTAssertEqual(loaded?.history.count, 0, "History should default to empty array")
         XCTAssertEqual(loaded?.remainingCredits, 85)
+        XCTAssertEqual(loaded?.channelOpenedOnChain, false, "channelOpenedOnChain should default to false for old JSON")
+    }
+
+    func testChannelOpenedOnChainRoundTrip() throws {
+        let kp = JanusKeyPair()
+        let grant = SessionGrant(
+            sessionID: "sess-chan",
+            userPubkey: kp.publicKeyBase64,
+            providerID: "prov-chan",
+            maxCredits: 100,
+            expiresAt: Date().addingTimeInterval(3600),
+            backendSignature: "sig"
+        )
+        let persisted = PersistedClientSession(
+            privateKeyBase64: kp.privateKeyBase64,
+            sessionGrant: grant,
+            spendState: SpendState(sessionID: "sess-chan"),
+            channelOpenedOnChain: true
+        )
+        try store.save(persisted, as: "client_chan.json")
+        let loaded = store.load(PersistedClientSession.self, from: "client_chan.json")
+
+        XCTAssertEqual(loaded?.channelOpenedOnChain, true, "channelOpenedOnChain should survive round-trip")
     }
 
     // MARK: - Overwrite behavior

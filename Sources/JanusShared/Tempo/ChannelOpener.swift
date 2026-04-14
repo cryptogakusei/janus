@@ -33,7 +33,10 @@ public struct ChannelOpener: Sendable {
     ///
     /// The wallet handles nonce management and signing internally,
     /// so this method only needs to build calldata and wait for receipts.
-    public func openChannel(wallet: any WalletProvider, channel: Channel) async -> OpenResult {
+    ///
+    /// - Parameter progressHandler: Optional closure called before each stage with a human-readable status string.
+    public func openChannel(wallet: any WalletProvider, channel: Channel,
+                            progressHandler: ((String) -> Void)? = nil) async -> OpenResult {
         let escrow = config.escrowContract
         let token = config.paymentToken
 
@@ -45,6 +48,7 @@ public struct ChannelOpener: Sendable {
         }
 
         // Step 1: Fund via testnet faucet
+        progressHandler?("Funding wallet...")
         do {
             try await rpc.fundAddress(wallet.address)
             try await Task.sleep(nanoseconds: 3_000_000_000)
@@ -53,6 +57,7 @@ public struct ChannelOpener: Sendable {
         }
 
         // Step 2: Approve escrow to spend pathUSD
+        progressHandler?("Approving token spend...")
         let approveData = EthTransaction.approveCalldata(
             spender: escrow,
             amount: UInt64(channel.deposit) * 10
@@ -72,6 +77,7 @@ public struct ChannelOpener: Sendable {
         }
 
         // Step 3: Open channel
+        progressHandler?("Opening payment channel...")
         let openData = EthTransaction.openChannelCalldata(
             payee: channel.payee,
             token: token,

@@ -268,11 +268,13 @@ final class OnChainTests: XCTestCase {
 
     func testChannelVerificationResultAccepted() {
         let onChain = ChannelVerificationResult.acceptedOnChain(onChainDeposit: 1000, onChainSettled: 0)
-        let offChain = ChannelVerificationResult.acceptedOffChainOnly
+        let rpcUnavailable = ChannelVerificationResult.rpcUnavailable
+        let notFound = ChannelVerificationResult.channelNotFoundOnChain
         let rejected = ChannelVerificationResult.rejected(reason: "bad")
 
         XCTAssertTrue(onChain.isAccepted)
-        XCTAssertTrue(offChain.isAccepted)
+        XCTAssertTrue(rpcUnavailable.isAccepted)   // safe for offline inference
+        XCTAssertFalse(notFound.isAccepted)         // channel was never opened — reject
         XCTAssertFalse(rejected.isAccepted)
     }
 

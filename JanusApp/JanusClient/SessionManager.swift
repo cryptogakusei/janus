@@ -40,7 +40,7 @@ class SessionManager: ObservableObject {
     }
     private let tempoConfig = TempoConfig.testnet
     /// Whether the channel has been successfully opened on-chain.
-    var channelOpenedOnChain = false
+    @Published var channelOpenedOnChain = false
     /// On-chain channel status.
     @Published var channelOnChainStatus: String = ""
 
@@ -114,6 +114,7 @@ class SessionManager: ObservableObject {
         self.history = persisted.history
         self.lastChannelId = persisted.lastChannelId
         self.lastVerifiedSettlement = persisted.lastVerifiedSettlement
+        self.channelOpenedOnChain = persisted.channelOpenedOnChain
         self.store = store
 
         // Always restore local ETH keypair if persisted (used for on-chain ops AND voucher signing)
@@ -253,7 +254,9 @@ class SessionManager: ObservableObject {
         os_log("CHANNEL_ONCHAIN_START", log: smokeLog, type: .default)
 
         let opener = ChannelOpener(config: tempoConfig)
-        let result = await opener.openChannel(wallet: wallet, channel: channel)
+        let result = await opener.openChannel(wallet: wallet, channel: channel) { [weak self] status in
+            Task { @MainActor [weak self] in self?.channelOnChainStatus = status }
+        }
 
         switch result {
         case .opened(let channelId, let approveTx, let openTx):
@@ -267,6 +270,7 @@ class SessionManager: ObservableObject {
         case .alreadyOpen(let channelId):
             channelOpenedOnChain = true
             channelOnChainStatus = "Channel already open"
+            persist()
             os_log("CHANNEL_ALREADY_OPEN=%{public}@", log: smokeLog, type: .default, channelId.ethHexPrefixed)
             print("Channel already exists on-chain")
         case .failed(let reason):
@@ -368,7 +372,8 @@ class SessionManager: ObservableObject {
             history: history,
             ethPrivateKeyHex: ethKeyPair?.privateKeyData.ethHexPrefixed,
             lastChannelId: lastChannelId,
-            lastVerifiedSettlement: lastVerifiedSettlement
+            lastVerifiedSettlement: lastVerifiedSettlement,
+            channelOpenedOnChain: channelOpenedOnChain
         )
         do {
             try store.save(state, as: Self.filename(for: providerID))

@@ -551,11 +551,16 @@ class ProviderEngine: ObservableObject {
         // If channel info included, verify and cache
         if let info = request.channelInfo, let vv = voucherVerifier {
             let result = await vv.verifyChannelInfoOnChain(info)
-            guard result.isAccepted else {
-                if case .rejected(let reason) = result {
-                    sendError(requestID: request.requestID, sessionID: request.sessionID,
-                              code: .invalidSession, message: "Channel rejected: \(reason)")
-                }
+            switch result {
+            case .acceptedOnChain, .rpcUnavailable:
+                break  // proceed; rpcUnavailable is safe — supports offline inference after initial handshake
+            case .channelNotFoundOnChain:
+                sendError(requestID: request.requestID, sessionID: request.sessionID,
+                          code: .channelNotReady, message: "Channel not yet opened on-chain.")
+                return
+            case .rejected(let reason):
+                sendError(requestID: request.requestID, sessionID: request.sessionID,
+                          code: .invalidSession, message: "Channel rejected: \(reason)")
                 return
             }
 
@@ -590,7 +595,8 @@ class ProviderEngine: ObservableObject {
                 let verifyStatus: String
                 switch result {
                 case .acceptedOnChain(let deposit, let settled): verifyStatus = "on-chain verified (deposit=\(deposit), settled=\(settled))"
-                case .acceptedOffChainOnly: verifyStatus = "off-chain only"
+                case .channelNotFoundOnChain: verifyStatus = "not found on-chain"
+                case .rpcUnavailable: verifyStatus = "RPC unavailable (offline)"
                 case .rejected: verifyStatus = "rejected"
                 }
                 print("Tempo channel \(isUpdate ? "updated" : "cached") for session \(request.sessionID.prefix(8))...: \(verifyStatus)")

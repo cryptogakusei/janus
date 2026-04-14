@@ -114,19 +114,41 @@ struct PromptView: View {
     }
 
     private var reconnectingBanner: some View {
-        HStack {
-            if engine.connectedProvider != nil {
-                ProgressView()
-                    .scaleEffect(0.7)
-                Text("Setting up session...")
-                    .font(.subheadline)
-            } else {
-                Image(systemName: "wifi.slash")
-                Text("Reconnecting to provider...")
-                    .font(.subheadline)
-                Spacer()
-                Button("Back") { dismiss() }
-                    .font(.subheadline.bold())
+        VStack(spacing: 6) {
+            HStack {
+                if engine.connectedProvider != nil {
+                    let isFailed = engine.channelStatus.contains("failed")
+                    if isFailed {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    } else {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(isFailed ? "Channel setup failed" : "Setting up payment channel...")
+                            .font(.subheadline)
+                        if !engine.channelStatus.isEmpty {
+                            Text(engine.channelStatus)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if isFailed {
+                        Button("Retry") {
+                            engine.sessionManager?.retryChannelOpenIfNeeded()
+                        }
+                        .font(.subheadline.bold())
+                    }
+                } else {
+                    Image(systemName: "wifi.slash")
+                    Text("Reconnecting to provider...")
+                        .font(.subheadline)
+                    Spacer()
+                    Button("Back") { dismiss() }
+                        .font(.subheadline.bold())
+                }
             }
         }
         .padding()

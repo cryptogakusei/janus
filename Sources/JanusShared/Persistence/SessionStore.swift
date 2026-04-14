@@ -26,6 +26,8 @@ public struct PersistedClientSession: Codable, Sendable {
     public var lastChannelId: Data?
     /// On-chain verified settlement amount (nil = not yet verified).
     public var lastVerifiedSettlement: UInt64?
+    /// Whether the on-chain channel was successfully opened (persisted to survive app restart).
+    public var channelOpenedOnChain: Bool
 
     public init(
         privateKeyBase64: String,
@@ -35,7 +37,8 @@ public struct PersistedClientSession: Codable, Sendable {
         history: [HistoryEntry] = [],
         ethPrivateKeyHex: String? = nil,
         lastChannelId: Data? = nil,
-        lastVerifiedSettlement: UInt64? = nil
+        lastVerifiedSettlement: UInt64? = nil,
+        channelOpenedOnChain: Bool = false
     ) {
         self.privateKeyBase64 = privateKeyBase64
         self.sessionGrant = sessionGrant
@@ -45,6 +48,7 @@ public struct PersistedClientSession: Codable, Sendable {
         self.ethPrivateKeyHex = ethPrivateKeyHex
         self.lastChannelId = lastChannelId
         self.lastVerifiedSettlement = lastVerifiedSettlement
+        self.channelOpenedOnChain = channelOpenedOnChain
     }
 
     /// Custom decoder: defaults optional fields when missing (backwards compatibility).
@@ -58,6 +62,7 @@ public struct PersistedClientSession: Codable, Sendable {
         ethPrivateKeyHex = try container.decodeIfPresent(String.self, forKey: .ethPrivateKeyHex)
         lastChannelId = try container.decodeIfPresent(Data.self, forKey: .lastChannelId)
         lastVerifiedSettlement = try container.decodeIfPresent(UInt64.self, forKey: .lastVerifiedSettlement)
+        channelOpenedOnChain = try container.decodeIfPresent(Bool.self, forKey: .channelOpenedOnChain) ?? false
     }
 
     /// Whether this session is still valid (not expired).

@@ -131,9 +131,9 @@ public struct VoucherVerifier: Sendable {
             return .rejected(reason: "Off-chain verification failed")
         }
 
-        // If no RPC URL, accept based on off-chain checks only
+        // If no RPC URL, can't verify on-chain
         guard config.rpcURL != nil else {
-            return .acceptedOffChainOnly
+            return .rpcUnavailable
         }
 
         // Query on-chain state
@@ -142,7 +142,7 @@ public struct VoucherVerifier: Sendable {
             let onChain = try await escrow.getChannel(channelId: info.channelId)
 
             guard onChain.exists else {
-                return .acceptedOffChainOnly  // Channel not opened on-chain yet — trust client for now
+                return .channelNotFoundOnChain  // Channel was queried but never opened
             }
 
             guard !onChain.finalized else {
@@ -161,8 +161,8 @@ public struct VoucherVerifier: Sendable {
             let onChainSettled = onChain.settled.toUInt64 ?? 0
             return .acceptedOnChain(onChainDeposit: onChainDeposit, onChainSettled: onChainSettled)
         } catch {
-            // RPC call failed — fall back to off-chain
-            return .acceptedOffChainOnly
+            // RPC call failed — can't verify on-chain
+            return .rpcUnavailable
         }
     }
 }
@@ -171,15 +171,18 @@ public struct VoucherVerifier: Sendable {
 public enum ChannelVerificationResult: Sendable {
     /// Channel verified against on-chain state. Deposit and settled amount confirmed.
     case acceptedOnChain(onChainDeposit: UInt64, onChainSettled: UInt64)
-    /// Off-chain checks passed, but on-chain verification skipped (no RPC or channel not yet opened).
-    case acceptedOffChainOnly
+    /// Channel was queried on-chain but does not exist (was never opened).
+    case channelNotFoundOnChain
+    /// RPC unavailable or not configured — off-chain checks passed but on-chain state unknown.
+    /// Accepted to support offline inference after the initial handshake.
+    case rpcUnavailable
     /// Verification failed.
     case rejected(reason: String)
 
     public var isAccepted: Bool {
         switch self {
-        case .acceptedOnChain, .acceptedOffChainOnly: return true
-        case .rejected: return false
+        case .acceptedOnChain, .rpcUnavailable: return true
+        case .channelNotFoundOnChain, .rejected: return false
         }
     }
 }
