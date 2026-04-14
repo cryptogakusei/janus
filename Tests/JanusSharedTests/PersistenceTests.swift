@@ -199,6 +199,59 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(loaded?.channelOpenedOnChain, true, "channelOpenedOnChain should survive round-trip")
     }
 
+    // MARK: - settledChannelAmounts persistence
+
+    func testSettledChannelAmountsPersistenceRoundTrip() throws {
+        let state = PersistedProviderState(
+            providerID: "test",
+            privateKeyBase64: "dGVzdA==",
+            settledChannelAmounts: ["0xabc": 42, "0xdef": 100]
+        )
+        let data = try JSONEncoder.janus.encode(state)
+        let decoded = try JSONDecoder.janus.decode(PersistedProviderState.self, from: data)
+        XCTAssertEqual(decoded.settledChannelAmounts?["0xabc"], 42)
+        XCTAssertEqual(decoded.settledChannelAmounts?["0xdef"], 100)
+    }
+
+    func testSettledChannelAmounts_decodesNilFromOldFormat() throws {
+        let json = """
+        {"providerID":"test","privateKeyBase64":"dGVzdA==","totalRequestsServed":0,"totalCreditsEarned":0}
+        """
+        let decoded = try JSONDecoder.janus.decode(PersistedProviderState.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.settledChannelAmounts)
+    }
+
+    /// Key invariant: after recovering settledAmount from local cache, subsequent vouchers
+    /// produce correct unsettledAmount — not inflated by prior settled spend.
+    func testCachedSettledAmountProducesCorrectUnsettledAmount() throws {
+        let clientKP = try EthKeyPair()
+        let providerKP = try EthKeyPair()
+        let salt = Keccak256.hash(Data("test-cache-recovery".utf8))
+        var channel = Channel(
+            payer: clientKP.address,
+            payee: providerKP.address,
+            token: EthAddress(Data(repeating: 0, count: 20)),
+            salt: salt,
+            authorizedSigner: clientKP.address,
+            deposit: 100,
+            config: TempoConfig.testnet
+        )
+
+        // Simulate cache recovery: 57 credits were settled in a prior session
+        channel.recordSettlement(amount: 57)
+        XCTAssertEqual(channel.settledAmount, 57)
+        XCTAssertEqual(channel.unsettledAmount, 0)
+
+        // Client sends voucher for cumulative 60 (3 new credits above the prior 57)
+        let voucher = Voucher(channelId: channel.channelId, cumulativeAmount: 60)
+        let signed = try voucher.sign(with: clientKP, config: TempoConfig.testnet)
+        try channel.acceptVoucher(signed)
+
+        // unsettledAmount must be 3, not 60 (which would be the inflated value without cache recovery)
+        XCTAssertEqual(channel.unsettledAmount, 3)
+        XCTAssertEqual(channel.authorizedAmount, 60)
+    }
+
     // MARK: - Overwrite behavior
 
     func testSaveOverwritesPreviousValue() throws {

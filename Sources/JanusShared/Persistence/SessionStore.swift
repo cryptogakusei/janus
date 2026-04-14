@@ -120,6 +120,9 @@ public struct PersistedProviderState: Codable, Sendable {
     public var settlementIntervalSeconds: Int?
     /// Aggregate unsettled credit threshold for auto-settlement (0 = disabled). Nil means never persisted.
     public var settlementThreshold: Int?
+    /// Settled amount per channelId (hex) — persisted for settledAmount recovery when RPC is
+    /// unavailable on reconnect. Updated on every persist so periodic settlement is covered.
+    public var settledChannelAmounts: [String: UInt64]?
 
     public init(
         providerID: String,
@@ -132,7 +135,8 @@ public struct PersistedProviderState: Codable, Sendable {
         unsettledChannels: [String: Channel]? = nil,
         sessionToIdentity: [String: String]? = nil,
         settlementIntervalSeconds: Int? = nil,
-        settlementThreshold: Int? = nil
+        settlementThreshold: Int? = nil,
+        settledChannelAmounts: [String: UInt64]? = nil
     ) {
         self.providerID = providerID
         self.privateKeyBase64 = privateKeyBase64
@@ -145,6 +149,7 @@ public struct PersistedProviderState: Codable, Sendable {
         self.sessionToIdentity = sessionToIdentity
         self.settlementIntervalSeconds = settlementIntervalSeconds
         self.settlementThreshold = settlementThreshold
+        self.settledChannelAmounts = settledChannelAmounts
     }
 
     /// Custom decoder: defaults new fields when missing (backwards compatibility).
@@ -161,6 +166,7 @@ public struct PersistedProviderState: Codable, Sendable {
         sessionToIdentity = try container.decodeIfPresent([String: String].self, forKey: .sessionToIdentity)
         settlementIntervalSeconds = try container.decodeIfPresent(Int.self, forKey: .settlementIntervalSeconds)
         settlementThreshold = try container.decodeIfPresent(Int.self, forKey: .settlementThreshold)
+        settledChannelAmounts = try container.decodeIfPresent([String: UInt64].self, forKey: .settledChannelAmounts)
     }
 }
 

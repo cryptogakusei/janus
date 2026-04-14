@@ -144,6 +144,8 @@ class ProviderEngine: ObservableObject {
     private var channels: [String: Channel] = [:] {         // sessionID → Channel
         didSet { objectWillChange.send() }
     }
+    /// channelId (hex) → last known settledAmount. Persisted for RPC-unavailable reconnect recovery.
+    private var settledChannelAmounts: [String: UInt64] = [:]
     private var voucherVerifier: VoucherVerifier?
     private let tempoConfig = TempoConfig.testnet
     /// Provider's Ethereum keypair (for Tempo address identity).
@@ -196,6 +198,10 @@ class ProviderEngine: ObservableObject {
                 let totalUnsettled = unsettled.values.reduce(0) { $0 + Int($1.unsettledAmount) }
                 let details = unsettled.map { "\($0.key.prefix(8))...=\($0.value.unsettledAmount)" }.joined(separator: ", ")
                 print("Restored \(unsettled.count) unsettled channel(s) from previous session: \(totalUnsettled) total credits [\(details)]")
+            }
+            // Restore settled channel baselines for RPC-unavailable reconnect recovery
+            if let amounts = persisted.settledChannelAmounts {
+                self.settledChannelAmounts = amounts
             }
             // Restore settlement settings
             if let interval = persisted.settlementIntervalSeconds {
@@ -286,6 +292,7 @@ class ProviderEngine: ObservableObject {
         }.map(\.key)
         for sessionID in staleIDs {
             print("WARNING: Discarding stale channel \(sessionID.prefix(8))... (older than \(Int(Self.channelTTL / 3600))h) — \(channels[sessionID]?.unsettledAmount ?? 0) credits lost")
+            if let channel = channels[sessionID] { recordSettledBaseline(for: channel) }
             channels.removeValue(forKey: sessionID)
             sessionToIdentity.removeValue(forKey: sessionID)
         }
@@ -484,6 +491,15 @@ class ProviderEngine: ObservableObject {
         }
     }
 
+    /// Record the settled amount for a channel before it leaves in-memory state.
+    /// Guards against the settled baseline being lost when the channel is removed
+    /// and RPC is unavailable on the next reconnect.
+    private func recordSettledBaseline(for channel: Channel) {
+        guard channel.settledAmount > 0 else { return }
+        let key = channel.channelId.ethHexPrefixed
+        settledChannelAmounts[key] = max(settledChannelAmounts[key] ?? 0, channel.settledAmount)
+    }
+
     /// Remove a channel only if its channelId still matches (guards against a reconnected client replacing the channel).
     /// Prunes all session-related state: identity mapping, sender routing, and cached responses.
     private func removeChannelIfMatch(sessionID: String, expectedChannelId: Data, onlyIfSettled: Bool = false) {
@@ -491,6 +507,7 @@ class ProviderEngine: ObservableObject {
         if onlyIfSettled {
             guard channels[sessionID]?.unsettledAmount == 0 else { return }
         }
+        if let channel = channels[sessionID] { recordSettledBaseline(for: channel) }
         channels.removeValue(forKey: sessionID)
         sessionToIdentity.removeValue(forKey: sessionID)
         sessionToSender.removeValue(forKey: sessionID)
@@ -578,6 +595,9 @@ class ProviderEngine: ObservableObject {
             // Only replace channel if it's new or has different params (e.g., new keypair).
             // Preserving the existing channel keeps voucher history (authorizedAmount).
             if existingChannel?.channelId != info.channelId {
+                // Record the old channel's settled baseline before overwriting (channel replacement path).
+                if let old = existingChannel { recordSettledBaseline(for: old) }
+
                 var channel = Channel(
                     payer: info.payerAddress, payee: info.payeeAddress,
                     token: info.tokenAddress, salt: info.salt,
@@ -588,7 +608,16 @@ class ProviderEngine: ObservableObject {
                 // whose cumulative voucher amounts include previously-settled spend.
                 if case .acceptedOnChain(_, let onChainSettled) = result, onChainSettled > 0 {
                     channel.recordSettlement(amount: onChainSettled)
+                    // Keep cache in sync with authoritative on-chain value
+                    settledChannelAmounts[info.channelId.ethHexPrefixed] = onChainSettled
                     print("Initialized settledAmount=\(onChainSettled) from on-chain for session \(request.sessionID.prefix(8))...")
+                } else if case .rpcUnavailable = result {
+                    // RPC unavailable — fall back to locally persisted settled amount if known
+                    let key = info.channelId.ethHexPrefixed
+                    if let cached = settledChannelAmounts[key], cached > 0 {
+                        channel.recordSettlement(amount: cached)
+                        print("Initialized settledAmount=\(cached) from local cache (RPC unavailable) for session \(request.sessionID.prefix(8))...")
+                    }
                 }
                 let isUpdate = existingChannel != nil
                 channels[request.sessionID] = channel
@@ -857,6 +886,21 @@ class ProviderEngine: ObservableObject {
                               credits: entry.credits, isError: entry.isError, sessionID: entry.sessionID)
         }
         let unsettled = channels.filter { $0.value.latestVoucher != nil && $0.value.unsettledAmount > 0 }
+
+        // Upsert settledAmount for all in-memory channels. Covers the periodic/threshold settlement
+        // path where removeAfterSettlement=false — channels stay in memory after settlement with
+        // unsettledAmount=0, are excluded from unsettled filter above, but their settled baseline
+        // must survive a restart for RPC-unavailable reconnects.
+        for (_, channel) in channels where channel.settledAmount > 0 {
+            let key = channel.channelId.ethHexPrefixed
+            settledChannelAmounts[key] = max(settledChannelAmounts[key] ?? 0, channel.settledAmount)
+        }
+        // Cap at 500 entries — far more than needed in practice. Random eviction if exceeded.
+        while settledChannelAmounts.count > 500 {
+            if let randomKey = settledChannelAmounts.keys.randomElement() {
+                settledChannelAmounts.removeValue(forKey: randomKey)
+            }
+        }
         // Only persist identity mappings for unsettled sessions — those are the only channels restored on restart.
         // Non-unsettled identity mappings are re-established when clients reconnect and send a PromptRequest.
         let unsettledIdentities = sessionToIdentity.filter { unsettled[$0.key] != nil }
@@ -871,7 +915,8 @@ class ProviderEngine: ObservableObject {
             unsettledChannels: unsettled.isEmpty ? nil : unsettled,
             sessionToIdentity: unsettledIdentities.isEmpty ? nil : unsettledIdentities,
             settlementIntervalSeconds: settlementIntervalSeconds,
-            settlementThreshold: settlementThreshold
+            settlementThreshold: settlementThreshold,
+            settledChannelAmounts: settledChannelAmounts.isEmpty ? nil : settledChannelAmounts
         )
         do {
             try store.save(state, as: Self.filename)
