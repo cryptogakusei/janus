@@ -28,6 +28,12 @@ public struct PersistedClientSession: Codable, Sendable {
     public var lastVerifiedSettlement: UInt64?
     /// Whether the on-chain channel was successfully opened (persisted to survive app restart).
     public var channelOpenedOnChain: Bool
+    /// Persisted channel deposit after top-ups. Takes precedence over sessionGrant.maxCredits
+    /// when reconstructing the channel in setupTempoChannel(). Nil means no top-up has occurred.
+    public var lastChannelDeposit: UInt64?
+    /// Escrow contract address at time of last persist. Used to detect contract migrations:
+    /// if this differs from the current TempoConfig, channelOpenedOnChain is reset to false.
+    public var lastEscrowContract: String?
 
     public init(
         privateKeyBase64: String,
@@ -38,7 +44,9 @@ public struct PersistedClientSession: Codable, Sendable {
         ethPrivateKeyHex: String? = nil,
         lastChannelId: Data? = nil,
         lastVerifiedSettlement: UInt64? = nil,
-        channelOpenedOnChain: Bool = false
+        channelOpenedOnChain: Bool = false,
+        lastChannelDeposit: UInt64? = nil,
+        lastEscrowContract: String? = nil
     ) {
         self.privateKeyBase64 = privateKeyBase64
         self.sessionGrant = sessionGrant
@@ -49,6 +57,8 @@ public struct PersistedClientSession: Codable, Sendable {
         self.lastChannelId = lastChannelId
         self.lastVerifiedSettlement = lastVerifiedSettlement
         self.channelOpenedOnChain = channelOpenedOnChain
+        self.lastChannelDeposit = lastChannelDeposit
+        self.lastEscrowContract = lastEscrowContract
     }
 
     /// Custom decoder: defaults optional fields when missing (backwards compatibility).
@@ -63,6 +73,8 @@ public struct PersistedClientSession: Codable, Sendable {
         lastChannelId = try container.decodeIfPresent(Data.self, forKey: .lastChannelId)
         lastVerifiedSettlement = try container.decodeIfPresent(UInt64.self, forKey: .lastVerifiedSettlement)
         channelOpenedOnChain = try container.decodeIfPresent(Bool.self, forKey: .channelOpenedOnChain) ?? false
+        lastChannelDeposit = try container.decodeIfPresent(UInt64.self, forKey: .lastChannelDeposit)
+        lastEscrowContract = try container.decodeIfPresent(String.self, forKey: .lastEscrowContract)
     }
 
     /// Whether this session is still valid (not expired).
@@ -71,7 +83,8 @@ public struct PersistedClientSession: Codable, Sendable {
     }
 
     public var remainingCredits: Int {
-        sessionGrant.maxCredits - spendState.cumulativeSpend
+        let ceiling = lastChannelDeposit.map(Int.init) ?? sessionGrant.maxCredits
+        return ceiling - spendState.cumulativeSpend
     }
 }
 

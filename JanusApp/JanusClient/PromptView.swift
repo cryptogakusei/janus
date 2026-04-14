@@ -14,6 +14,7 @@ struct PromptView: View {
     @State private var targetLanguage = "Spanish"
     @State private var rewriteStyle = "professional"
     @State private var showHistory = false
+    @State private var showTopUp = false
 
     var body: some View {
         ScrollView {
@@ -28,6 +29,8 @@ struct PromptView: View {
                     disconnectedBanner
                 } else if !engine.sessionReady {
                     reconnectingBanner
+                } else if !engine.channelStatus.isEmpty {
+                    channelStatusBanner
                 }
 
                 taskPicker
@@ -55,12 +58,15 @@ struct PromptView: View {
             .padding()
         }
         .scrollDismissesKeyboard(.interactively)
+        .sheet(isPresented: $showTopUp) {
+            TopUpSheet(engine: engine, isPresented: $showTopUp)
+        }
     }
 
     // MARK: - Subviews
 
     private var balanceBar: some View {
-        let total = engine.sessionManager?.sessionGrant.maxCredits ?? 100
+        let total = engine.sessionManager?.totalDeposit ?? 100
         let remaining = engine.sessionManager?.remainingCredits ?? 0
         let fraction = total > 0 ? Double(remaining) / Double(total) : 0
 
@@ -70,9 +76,9 @@ struct PromptView: View {
                 Text("\(remaining) credits remaining")
                     .font(.subheadline.bold())
                 Spacer()
-                Text("\(engine.sessionManager?.receipts.count ?? 0) receipts")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Button("Top Up") { showTopUp = true }
+                    .font(.caption.bold())
+                    .disabled(engine.isWaitingForResponse || !engine.sessionReady)
             }
 
             GeometryReader { geo in
@@ -153,6 +159,34 @@ struct PromptView: View {
         }
         .padding()
         .background(.orange.opacity(0.15))
+        .cornerRadius(10)
+    }
+
+    private var channelStatusBanner: some View {
+        let status = engine.channelStatus
+        let isComplete = status.hasPrefix("Top-up complete")
+            || status.hasPrefix("Channel already open")
+            || status.hasPrefix("Channel open on-chain")
+        let isFailed = status.contains("failed") || status.contains("Failed")
+        let isInProgress = !isComplete && !isFailed
+        return HStack(spacing: 8) {
+            if isFailed {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+            } else if isComplete {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else if isInProgress {
+                ProgressView().scaleEffect(0.7)
+            }
+            Text(status)
+                .font(.caption)
+                .foregroundStyle(isFailed ? .red : isComplete ? .green : .primary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(isFailed ? .red.opacity(0.08) : isComplete ? .green.opacity(0.08) : .blue.opacity(0.08))
         .cornerRadius(10)
     }
 
@@ -416,6 +450,8 @@ struct PromptView: View {
         }
     }
 
+    // MARK: - Top Up sheet
+
     // MARK: - Actions
 
     private func submit() {
@@ -439,5 +475,78 @@ struct PromptView: View {
         if engine.requestState != .error {
             promptText = ""
         }
+    }
+}
+
+// MARK: - Top Up sheet
+
+private struct TopUpSheet: View {
+    let engine: ClientEngine
+    @Binding var isPresented: Bool
+    @State private var selectedAmount: UInt64 = 50
+
+    private let tiers: [(label: String, amount: UInt64)] = [
+        ("+50 credits", 50),
+        ("+100 credits", 100),
+        ("+200 credits", 200),
+    ]
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                Text("Select amount to add")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                VStack(spacing: 12) {
+                    ForEach(tiers, id: \.amount) { tier in
+                        Button {
+                            selectedAmount = tier.amount
+                        } label: {
+                            HStack {
+                                Text(tier.label)
+                                    .font(.body.bold())
+                                Spacer()
+                                if selectedAmount == tier.amount {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.blue)
+                                }
+                            }
+                            .padding()
+                            .background(selectedAmount == tier.amount ? .blue.opacity(0.1) : .gray.opacity(0.07))
+                            .cornerRadius(10)
+                        }
+                        .foregroundStyle(.primary)
+                    }
+                }
+
+                if !engine.channelStatus.isEmpty {
+                    Text(engine.channelStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                Button {
+                    engine.topUpChannel(additionalDeposit: selectedAmount)
+                    isPresented = false
+                } label: {
+                    Text("Confirm Top Up (+\(selectedAmount))")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("Top Up")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { isPresented = false }
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }

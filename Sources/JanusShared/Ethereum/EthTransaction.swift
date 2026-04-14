@@ -104,6 +104,15 @@ public extension EthTransaction {
         ])
     }
 
+    /// ABI calldata for `topUp(bytes32 channelId, uint256 additionalDeposit)`.
+    static func topUpCalldata(channelId: Data, additionalDeposit: UInt64) -> Data {
+        let selector = Keccak256.hash(Data("topUp(bytes32,uint256)".utf8)).prefix(4)
+        return selector + ABI.encode([
+            .bytes32(channelId),
+            .uint256(additionalDeposit),
+        ])
+    }
+
     /// ABI calldata for escrow `settle(channelId, cumulativeAmount, signature)`.
     static func settleChannelCalldata(
         channelId: Data, cumulativeAmount: UInt64, voucherSignature: Data

@@ -1579,11 +1579,12 @@ Full prioritized list of all remaining features across relay, transport, payment
 | # | Feature | Effort | Dependencies | Details |
 |---|---------|--------|-------------|---------|
 | 10 | ~~SettlementNotice message~~ → **On-chain settlement verification** | Small | — | **DONE.** Client reads blockchain directly via `EscrowClient.getChannel()` to verify provider settlement. Three-state comparison: match (green), overpayment (red), underpayment/partial (orange). Pull-only design — no provider changes needed. Push notification deferred to v2 (needs store-and-forward for disconnected clients). |
-| 11 | Channel top-up + wallet funding | Medium | — | Three subgoals in sequence: **(11a) Wallet key persistence** — persist the local ETH keypair to iCloud Keychain so it survives app deletion/reinstall before any real money is involved. **(11b) Channel top-up** — check whether TempoStreamChannel supports `increaseDeposit()`; if yes, add top-up flow in Swift (approve + increaseDeposit); if no, settle + reopen. **(11c) Funding UX** — show local wallet address + QR code so user can transfer tokens from an external wallet (MVP); third-party on-ramp SDK (MoonPay/Transak) as a follow-up. No Tempo-native on-ramp exists. |
+| 11 | Channel top-up + wallet funding | Medium | — | Three subgoals: **(11a) ~~Wallet key persistence~~** — DONE. **(11b) ~~Channel top-up~~** — DONE. `topUp(bytes32,uint256)` on `TempoStreamChannel`; approve+topUp flow; 3-way state sync (client memory, persistence, provider cache); +50/+100/+200 UI. ~~Bug #11b-1~~: fixed — `guard !channelOpenedOnChain` early exit in `openChannelOnChain()` + `do/catch` on RPC pre-existence check + `lastEscrowContract` contract migration guard. **(11c) Funding UX** — show local wallet address + QR code so user can transfer tokens from an external wallet (MVP); third-party on-ramp SDK (MoonPay/Transak) as follow-up. **Note:** top-up (and by extension funding) requires internet connectivity — the approve + topUp transactions go on-chain. Inference works offline but topping up does not. Add a visible note in the funding UI reminding the user that an internet connection is required. |
 | 12 | Multi-channel management UI | Small | — | View/manage channels with multiple providers. Currently one provider, one channel. |
 | 12a | ~~Fix first-query failure after provider switch~~ | Small | — | **DONE.** Generation counter in `createSession()` discards stale async results. `canSubmit` gated on `sessionReady` (not just `connectedProvider`). Defense-in-depth guard in `submitRequest()`. |
 | 13 | ~~Periodic & threshold-based settlement~~ | Small | — | **DONE.** Provider settles on a configurable timer (default 5 min) and/or when aggregate unsettled credits cross a threshold (default 50). Provider UI with segmented pickers. Persisted settings survive restart. Bug fix: `settledAmount` desync after provider restart caused inflated `unsettledAmount` and premature threshold triggers — fixed by initializing `settledAmount` from on-chain state during channel verification. Additional hardening: startup race fix (fund→retry→timer ordering), settlement queuing (no dropped disconnect requests), 24h TTL on stale channels, zombie channel prevention (re-check on-chain after tx revert), computed `activeSessionCount`. |
 | 13b | Real token economics / USD pricing | Product decision | — | Dynamic pricing by model load, token count, or USD denomination. Currently fixed 3/5/8 credit tiers. |
+| 13c | Remove Privy SDK | Small | — | Privy is currently dead weight: can't send raw txs to Tempo chain (custom chain limitation), MPC voucher signing requires internet (conflicts with offline-first design), local EthKeyPair already handles all signing and on-chain ops. Privy reduced to `privyIdentityAddress` display only. Removal scope: delete `PrivyAuthManager`, `PrivyWalletProvider`, `LoginView` (or replace with a simple "tap to start" entry), remove Privy SPM dependency. Replace with direct entry to `DiscoveryView`. No protocol or payment changes needed. |
 | 14 | Mainnet deployment | Small | — | TempoConfig.mainnet + deploy TempoStreamChannel contract to mainnet. No code changes needed. |
 | 14b | Cap off-chain voucher exposure | Small | — | Provider currently serves inference optimistically before the client's channel is confirmed on-chain (`VoucherVerifier` returns `.acceptedOffChainOnly`). Risk: client never opens channel, provider serves for free. Fix: serve first request optimistically, require on-chain confirmation before subsequent requests. Bounded risk (one cheap inference per session). |
 
@@ -2345,3 +2346,100 @@ Definitive reinstall test passed:
 - New `sessionID` confirmed JSON was wiped; key came from Keychain only
 
 **Commit:** `b28b409`
+
+---
+
+## 2026-04-14 (continued)
+
+### Feature #11b: Channel Top-Up
+
+#### Problem
+
+Credits were one-way: once exhausted the user had to close and reopen the channel (losing continuity and paying two sets of gas). `TempoStreamChannel` exposes `topUp(bytes32 channelId, uint256 additionalDeposit)` which increases the existing deposit in-place — cheaper and channel-preserving.
+
+Three-way state synchronization required: (1) client in-memory `channel.deposit`, (2) `PersistedClientSession.lastChannelDeposit` so deposit survives restart, (3) provider's cached `Channel` object so it accepts vouchers above the old deposit limit.
+
+#### Solution
+
+- `ChannelTopUp` struct mirrors `ChannelOpener` exactly: fund → approve → topUp → on-chain verify
+- `Channel.deposit` changed from `let` to `var`; `recordTopUp(newDeposit:)` mutation method added
+- `PersistedClientSession.lastChannelDeposit: UInt64?` new field with `decodeIfPresent` (backwards-compatible)
+- `remainingCredits` ceiling uses `lastChannelDeposit ?? sessionGrant.maxCredits` in both persistence and live SessionManager
+- Provider re-verifies on-chain when same `channelId` arrives with a higher `deposit` in `channelInfo`
+- `ClientEngine.topUpChannel()` guard: disabled during in-flight inference to prevent race conditions
+- Top Up button in balance bar → sheet with +50/+100/+200 tiers
+- Progress banner (`channelStatusBanner`) shows for all channel status updates including already-open channels — fixed a bug where `bindChannelStatus` was only wired for the `!channelOpenedOnChain` restore path
+
+#### Files Changed
+
+| File | Change |
+|------|--------|
+| `Sources/JanusShared/Ethereum/EthTransaction.swift` | `topUpCalldata()` — selector `0xb67644b9` |
+| `Sources/JanusShared/Tempo/ChannelTopUp.swift` | New file |
+| `Sources/JanusShared/Tempo/Channel.swift` | `deposit` let → var; `recordTopUp()` |
+| `Sources/JanusShared/Persistence/SessionStore.swift` | `lastChannelDeposit`; `remainingCredits` formula |
+| `JanusApp/JanusClient/SessionManager.swift` | `topUpChannel()`; `creditCeiling`; `setupTempoChannel()` deposit; auto-clear status messages |
+| `JanusApp/JanusProvider/ProviderEngine.swift` | Re-verify on deposit change for same channelId |
+| `JanusApp/JanusClient/ClientEngine.swift` | `topUpChannel()` passthrough; `bindChannelStatus` wired for all session paths |
+| `JanusApp/JanusClient/PromptView.swift` | Top Up button + `TopUpSheet`; `channelStatusBanner` |
+
+#### Tests
+
+190 tests passing (+6 new):
+- `testTopUpCalldata_encodesCorrectly` — selector + ABI encoding
+- `testChannelRecordTopUp_updatesCreditAvailability` — deposit mutation + canAuthorize
+- `testPersistedClientSession_remainingCredits_usesLastChannelDeposit`
+- `testPersistedClientSession_remainingCredits_fallsBackToMaxCredits`
+- `testLastChannelDeposit_roundTrip` — JSON encode/decode survives
+- `testLastChannelDeposit_decodesNilFromOldFormat` — backwards compatibility
+
+#### Verification
+
+Manual end-to-end on testnet: top-up flow, post-top-up inference, restart persistence all confirmed working.
+
+---
+
+### Known Bug: `ChannelOpener` open tx reverts on fresh launch when pre-existence RPC check fails
+
+**Symptom:** On first fresh launch, a red banner briefly shows "On-chain failed: open tx reverted: 0x...". Inference still works — the channel exists on-chain from a previous session.
+
+**Root cause:** `ChannelOpener.openChannel()` checks if the channel already exists via `try? await escrowClient.getChannel(...)`. If the RPC call fails (network latency, testnet hiccup), `try?` silences the error and returns `nil`, so the pre-existence guard is skipped. The `open()` tx is then sent, and the contract reverts correctly because the channel already exists.
+
+**Impact:** UX only — alarming red error on first launch, clears on next connect. `channelOpenedOnChain` stays `false` so the second launch retries and gets `.alreadyOpen` (green checkmark).
+
+**Fix:** Harden the pre-existence check — retry the RPC call once before proceeding, or treat an RPC error as "assume exists" rather than "assume doesn't exist". Track as **Bug #11b-1**, fix in a follow-up.
+
+---
+
+### Bug #11b-1 Fix + Hardening
+
+#### Changes
+
+Three-part fix deployed 2026-04-14:
+
+1. **`SessionManager.openChannelOnChain()` — early exit when already open (Bug #11b-1 root fix)**
+   Added `guard !channelOpenedOnChain else { return }` at the top of `openChannelOnChain()`. Skips the entire `ChannelOpener` call on reconnect, eliminating the spurious open tx revert. Previously the `isFirstOpen` gate suppressed UI noise but still ran the opener (and its flaky RPC pre-existence check). Reviewed by systems-architect and architecture-reviewer before implementing.
+
+2. **`ChannelOpener.openChannel()` — `try?` → `do/catch` on RPC existence check (P2 hardening)**
+   The pre-existence check (`escrowClient.getChannel()`) was `try?` — RPC failure silently returned nil, skipping the guard and proceeding to send `open()` which reverted. Changed to `do/catch`: RPC failure now returns `.failed("RPC unavailable: cannot verify channel state")` instead of blundering forward. Protects the first-open path on flaky testnet.
+
+3. **`PersistedClientSession.lastEscrowContract` — contract migration guard (P3 hardening)**
+   Added `lastEscrowContract: String?` to persistence. On restore, if the stored address differs from `TempoConfig.testnet.escrowContract`, `channelOpenedOnChain` resets to `false`. Without this, a contract redeployment would leave `channelOpenedOnChain = true` referring to a now-defunct channel, causing the opener guard to permanently skip re-opening.
+
+#### Files Changed
+
+| File | Change |
+|------|--------|
+| `JanusApp/JanusClient/SessionManager.swift` | `guard !channelOpenedOnChain` early exit; contract address mismatch reset; `lastEscrowContract` in `persist()` |
+| `Sources/JanusShared/Tempo/ChannelOpener.swift` | `try?` → `do/catch` on pre-existence check |
+| `Sources/JanusShared/Persistence/SessionStore.swift` | `lastEscrowContract: String?` field + `decodeIfPresent` |
+
+#### Tests
+
+192 tests passing (+2 new):
+- `testLastEscrowContract_roundTrip` — JSON encode/decode survives
+- `testLastEscrowContract_decodesNilFromOldFormat` — backwards compatibility for old sessions
+
+#### Verification
+
+Both iPhones (Soubhik's iPhone + Madhuri's iPhone) + Mac provider deployed. Dual mode (iPhone as relay) verified working. No spurious revert error on reconnect.

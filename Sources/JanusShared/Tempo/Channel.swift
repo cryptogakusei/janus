@@ -31,7 +31,7 @@ public struct Channel: Codable, Sendable, Equatable {
     public let authorizedSigner: EthAddress
 
     /// The total amount deposited into the escrow.
-    public let deposit: UInt64
+    public var deposit: UInt64
 
     /// Current channel state.
     public var state: ChannelState
@@ -151,6 +151,11 @@ public extension Channel {
     /// Record an on-chain settlement (provider calls `escrow.settle()`).
     mutating func recordSettlement(amount: UInt64) {
         settledAmount = max(settledAmount, amount)
+    }
+
+    /// Record a successful on-chain top-up. Updates local deposit to the verified on-chain value.
+    mutating func recordTopUp(newDeposit: UInt64) {
+        deposit = newDeposit
     }
 }
 

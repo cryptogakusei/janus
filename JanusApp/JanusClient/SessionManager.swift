@@ -30,6 +30,8 @@ class SessionManager: ObservableObject {
     // Tempo payment channel
     private(set) var ethKeyPair: EthKeyPair?
     private(set) var walletProvider: (any WalletProvider)?
+    /// Persisted deposit after top-ups — nil means no top-up has occurred.
+    private var lastChannelDeposit: UInt64?
     /// Privy wallet address for identity/display only (not used for signing).
     private(set) var privyIdentityAddress: EthAddress?
     private(set) var channel: Channel?
@@ -109,12 +111,22 @@ class SessionManager: ObservableObject {
         self.sessionGrant = persisted.sessionGrant
         self.providerID = persisted.sessionGrant.providerID
         self.spendState = persisted.spendState
+        self.lastChannelDeposit = persisted.lastChannelDeposit
         self.remainingCredits = persisted.remainingCredits
         self.receipts = persisted.receipts
         self.history = persisted.history
         self.lastChannelId = persisted.lastChannelId
         self.lastVerifiedSettlement = persisted.lastVerifiedSettlement
-        self.channelOpenedOnChain = persisted.channelOpenedOnChain
+        // Reset channelOpenedOnChain if the escrow contract address changed since last persist
+        // (e.g. testnet redeployment). Without this, the guard in openChannelOnChain() would
+        // skip the opener for a channel that no longer exists on the new contract.
+        let currentEscrow = TempoConfig.testnet.escrowContract.description
+        if let storedEscrow = persisted.lastEscrowContract, storedEscrow != currentEscrow {
+            self.channelOpenedOnChain = false
+            print("Escrow contract changed (\(storedEscrow) → \(currentEscrow)), resetting channelOpenedOnChain")
+        } else {
+            self.channelOpenedOnChain = persisted.channelOpenedOnChain
+        }
         self.store = store
 
         // Always restore local ETH keypair if persisted (used for on-chain ops AND voucher signing)
@@ -237,7 +249,7 @@ class SessionManager: ObservableObject {
             token: tempoConfig.paymentToken,
             salt: salt,
             authorizedSigner: signerAddress,
-            deposit: UInt64(sessionGrant.maxCredits),
+            deposit: lastChannelDeposit ?? UInt64(sessionGrant.maxCredits),
             config: tempoConfig
         )
         self.channel = ch
@@ -256,6 +268,13 @@ class SessionManager: ObservableObject {
     /// Open the payment channel on-chain using the wallet provider.
     private func openChannelOnChain(wallet: any WalletProvider, channel: Channel) async {
         guard tempoConfig.rpcURL != nil else { return }
+        // Bug #11b-1: Skip the opener entirely when channel is already confirmed open.
+        // ChannelOpener uses try? on its pre-existence RPC check — if the RPC call fails,
+        // it proceeds to send open() which reverts because the channel already exists.
+        guard !channelOpenedOnChain else {
+            os_log("CHANNEL_ONCHAIN_SKIP_ALREADY_OPEN", log: smokeLog, type: .default)
+            return
+        }
         channelOnChainStatus = "Opening channel on-chain..."
         os_log("CHANNEL_ONCHAIN_START", log: smokeLog, type: .default)
 
@@ -273,9 +292,12 @@ class SessionManager: ObservableObject {
             os_log("CHANNEL_APPROVE_TX=%{public}@", log: smokeLog, type: .default, approveTx)
             os_log("CHANNEL_OPEN_TX=%{public}@", log: smokeLog, type: .default, openTx)
             print("Channel opened on-chain: approve=\(approveTx.prefix(18))... open=\(openTx.prefix(18))...")
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                self?.channelOnChainStatus = ""
+            }
         case .alreadyOpen(let channelId):
             channelOpenedOnChain = true
-            channelOnChainStatus = "Channel already open"
             persist()
             os_log("CHANNEL_ALREADY_OPEN=%{public}@", log: smokeLog, type: .default, channelId.ethHexPrefixed)
             print("Channel already exists on-chain")
@@ -284,6 +306,11 @@ class SessionManager: ObservableObject {
             os_log("CHANNEL_ONCHAIN_FAILED=%{public}@", log: smokeLog, type: .default, reason)
             print("On-chain channel opening failed: \(reason)")
         }
+    }
+
+    /// The total deposit ceiling for display purposes (reflects top-ups).
+    var totalDeposit: Int {
+        channel.map { Int($0.deposit) } ?? sessionGrant.maxCredits
     }
 
     /// Retry opening the channel on-chain if a previous attempt failed or was interrupted.
@@ -307,10 +334,15 @@ class SessionManager: ObservableObject {
         return VoucherAuthorization(requestID: requestID, quoteID: quoteID, signedVoucher: signed)
     }
 
+    /// The credit ceiling — uses channel deposit if available (reflects top-ups), otherwise sessionGrant.maxCredits.
+    private var creditCeiling: Int {
+        channel.map { Int($0.deposit) } ?? sessionGrant.maxCredits
+    }
+
     /// Update local state after receiving an InferenceResponse.
     func recordSpend(creditsCharged: Int, receipt: Receipt) {
         spendState.advance(creditsCharged: creditsCharged)
-        remainingCredits = sessionGrant.maxCredits - spendState.cumulativeSpend
+        remainingCredits = creditCeiling - spendState.cumulativeSpend
         receipts.insert(receipt, at: 0)
         persist()
     }
@@ -323,7 +355,7 @@ class SessionManager: ObservableObject {
             cumulativeSpend: response.cumulativeSpend,
             sequenceNumber: spendState.sequenceNumber + 1
         )
-        remainingCredits = sessionGrant.maxCredits - spendState.cumulativeSpend
+        remainingCredits = creditCeiling - spendState.cumulativeSpend
         receipts.insert(response.receipt, at: 0)
         persist()
     }
@@ -362,6 +394,39 @@ class SessionManager: ObservableObject {
         }
     }
 
+    /// Top up the active payment channel by sending additional tokens to escrow.
+    func topUpChannel(additionalDeposit: UInt64) async {
+        guard let channel = self.channel,
+              let wallet = self.walletProvider else {
+            channelOnChainStatus = "Top-up failed: no active channel"
+            return
+        }
+        channelOnChainStatus = "Topping up..."
+        let topUpService = ChannelTopUp(config: tempoConfig)
+        let result = await topUpService.topUp(
+            wallet: wallet,
+            channel: channel,
+            additionalDeposit: additionalDeposit
+        ) { [weak self] status in
+            Task { @MainActor [weak self] in self?.channelOnChainStatus = status }
+        }
+
+        switch result {
+        case .topped(_, _, let newDeposit):
+            self.channel?.recordTopUp(newDeposit: newDeposit)
+            lastChannelDeposit = newDeposit
+            remainingCredits = Int(newDeposit) - spendState.cumulativeSpend
+            channelOnChainStatus = "Top-up complete — \(remainingCredits) credits available"
+            persist()
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                self?.channelOnChainStatus = ""
+            }
+        case .failed(let reason):
+            channelOnChainStatus = "Top-up failed: \(reason)"
+        }
+    }
+
     /// Clear persisted session (e.g. on session expiry or manual reset).
     func clearPersistedSession() {
         store.delete(Self.filename(for: providerID))
@@ -379,7 +444,9 @@ class SessionManager: ObservableObject {
             ethPrivateKeyHex: ethKeyPair?.privateKeyData.ethHexPrefixed,
             lastChannelId: lastChannelId,
             lastVerifiedSettlement: lastVerifiedSettlement,
-            channelOpenedOnChain: channelOpenedOnChain
+            channelOpenedOnChain: channelOpenedOnChain,
+            lastChannelDeposit: lastChannelDeposit,
+            lastEscrowContract: tempoConfig.escrowContract.description
         )
         do {
             try store.save(state, as: Self.filename(for: providerID))

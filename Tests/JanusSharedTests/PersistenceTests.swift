@@ -174,6 +174,100 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(loaded?.channelOpenedOnChain, false, "channelOpenedOnChain should default to false for old JSON")
     }
 
+    func testLastChannelDeposit_roundTrip() throws {
+        let kp = JanusKeyPair()
+        let grant = SessionGrant(
+            sessionID: "sess-topup",
+            userPubkey: kp.publicKeyBase64,
+            providerID: "prov-topup",
+            maxCredits: 100,
+            expiresAt: Date().addingTimeInterval(3600)
+        )
+        let persisted = PersistedClientSession(
+            privateKeyBase64: kp.privateKeyBase64,
+            sessionGrant: grant,
+            spendState: SpendState(sessionID: "sess-topup"),
+            lastChannelDeposit: 150
+        )
+        try store.save(persisted, as: "client_topup.json")
+        let loaded = store.load(PersistedClientSession.self, from: "client_topup.json")
+
+        XCTAssertEqual(loaded?.lastChannelDeposit, 150, "lastChannelDeposit must survive JSON round-trip")
+        XCTAssertEqual(loaded?.remainingCredits, 150, "remainingCredits must use lastChannelDeposit as ceiling")
+    }
+
+    func testLastChannelDeposit_decodesNilFromOldFormat() throws {
+        // Simulate a session persisted before the lastChannelDeposit field existed:
+        // encode a valid session, strip the key from the JSON, then decode.
+        let kp = JanusKeyPair()
+        let grant = SessionGrant(
+            sessionID: "old-topup", userPubkey: kp.publicKeyBase64, providerID: "prov1",
+            maxCredits: 100, expiresAt: Date().addingTimeInterval(3600)
+        )
+        let session = PersistedClientSession(
+            privateKeyBase64: kp.privateKeyBase64,
+            sessionGrant: grant,
+            spendState: SpendState(sessionID: "old-topup", cumulativeSpend: 10),
+            lastChannelDeposit: 150  // will be stripped below
+        )
+        var dict = try JSONSerialization.jsonObject(
+            with: JSONEncoder.janus.encode(session)
+        ) as! [String: Any]
+        dict.removeValue(forKey: "lastChannelDeposit")
+        let oldData = try JSONSerialization.data(withJSONObject: dict)
+        let decoded = try JSONDecoder.janus.decode(PersistedClientSession.self, from: oldData)
+
+        XCTAssertNil(decoded.lastChannelDeposit, "Old sessions must decode lastChannelDeposit as nil")
+        XCTAssertEqual(decoded.remainingCredits, 90, "Old sessions must fall back to maxCredits ceiling")
+    }
+
+    func testLastEscrowContract_roundTrip() throws {
+        let kp = JanusKeyPair()
+        let grant = SessionGrant(
+            sessionID: "sess-escrow",
+            userPubkey: kp.publicKeyBase64,
+            providerID: "prov-escrow",
+            maxCredits: 100,
+            expiresAt: Date().addingTimeInterval(3600)
+        )
+        let persisted = PersistedClientSession(
+            privateKeyBase64: kp.privateKeyBase64,
+            sessionGrant: grant,
+            spendState: SpendState(sessionID: "sess-escrow"),
+            lastEscrowContract: "0xABCDEF1234567890ABCDEF1234567890ABCDEF12"
+        )
+        try store.save(persisted, as: "client_escrow.json")
+        let loaded = store.load(PersistedClientSession.self, from: "client_escrow.json")
+
+        XCTAssertEqual(loaded?.lastEscrowContract, "0xABCDEF1234567890ABCDEF1234567890ABCDEF12",
+                       "lastEscrowContract must survive JSON round-trip")
+    }
+
+    func testLastEscrowContract_decodesNilFromOldFormat() throws {
+        // Simulate a session persisted before lastEscrowContract existed:
+        // encode a valid session, strip the key, then decode.
+        let kp = JanusKeyPair()
+        let grant = SessionGrant(
+            sessionID: "old-escrow", userPubkey: kp.publicKeyBase64, providerID: "prov1",
+            maxCredits: 100, expiresAt: Date().addingTimeInterval(3600)
+        )
+        let session = PersistedClientSession(
+            privateKeyBase64: kp.privateKeyBase64,
+            sessionGrant: grant,
+            spendState: SpendState(sessionID: "old-escrow"),
+            lastEscrowContract: "0xSomeAddress"
+        )
+        var dict = try JSONSerialization.jsonObject(
+            with: JSONEncoder.janus.encode(session)
+        ) as! [String: Any]
+        dict.removeValue(forKey: "lastEscrowContract")
+        let oldData = try JSONSerialization.data(withJSONObject: dict)
+        let decoded = try JSONDecoder.janus.decode(PersistedClientSession.self, from: oldData)
+
+        XCTAssertNil(decoded.lastEscrowContract,
+                     "Old sessions without lastEscrowContract must decode as nil")
+    }
+
     func testChannelOpenedOnChainRoundTrip() throws {
         let kp = JanusKeyPair()
         let grant = SessionGrant(
@@ -246,6 +340,40 @@ final class PersistenceTests: XCTestCase {
         // unsettledAmount must be 3, not 60 (which would be the inflated value without cache recovery)
         XCTAssertEqual(channel.unsettledAmount, 3)
         XCTAssertEqual(channel.authorizedAmount, 60)
+    }
+
+    // MARK: - PersistedClientSession remainingCredits
+
+    func testPersistedClientSession_remainingCredits_usesLastChannelDeposit() throws {
+        let grant = SessionGrant(
+            sessionID: "s1", userPubkey: "pk", providerID: "p1",
+            maxCredits: 100, expiresAt: Date().addingTimeInterval(3600)
+        )
+        let spendState = SpendState(sessionID: "s1", cumulativeSpend: 90)
+        let session = PersistedClientSession(
+            privateKeyBase64: "aGVsbG8=",
+            sessionGrant: grant,
+            spendState: spendState,
+            lastChannelDeposit: 150
+        )
+        // ceiling is lastChannelDeposit (150), not maxCredits (100)
+        XCTAssertEqual(session.remainingCredits, 60)
+    }
+
+    func testPersistedClientSession_remainingCredits_fallsBackToMaxCredits() throws {
+        let grant = SessionGrant(
+            sessionID: "s2", userPubkey: "pk", providerID: "p1",
+            maxCredits: 100, expiresAt: Date().addingTimeInterval(3600)
+        )
+        let spendState = SpendState(sessionID: "s2", cumulativeSpend: 10)
+        let session = PersistedClientSession(
+            privateKeyBase64: "aGVsbG8=",
+            sessionGrant: grant,
+            spendState: spendState,
+            lastChannelDeposit: nil
+        )
+        // no top-up: falls back to maxCredits (100)
+        XCTAssertEqual(session.remainingCredits, 90)
     }
 
     // MARK: - Overwrite behavior

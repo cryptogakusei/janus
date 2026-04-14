@@ -327,6 +327,28 @@ final class WalletProviderTests: XCTestCase {
         XCTAssertEqual(calldata, fullTx.data)
     }
 
+    func testTopUpCalldata_encodesCorrectly() throws {
+        let channelId = Keccak256.hash(Data("top-up-test-channel".utf8))
+        let additionalDeposit: UInt64 = 50
+
+        let calldata = EthTransaction.topUpCalldata(channelId: channelId, additionalDeposit: additionalDeposit)
+
+        // Selector: keccak256("topUp(bytes32,uint256)").prefix(4)
+        let expectedSelector = Keccak256.hash(Data("topUp(bytes32,uint256)".utf8)).prefix(4)
+        XCTAssertEqual(calldata.prefix(4), expectedSelector, "Selector must be 0xb67644b9")
+
+        // Total length: 4 (selector) + 32 (bytes32) + 32 (uint256) = 68 bytes
+        XCTAssertEqual(calldata.count, 68, "Calldata must be exactly 68 bytes")
+
+        // channelId must appear at bytes 4..<36
+        XCTAssertEqual(Data(calldata[4..<36]), channelId)
+
+        // additionalDeposit (50) must be right-aligned in bytes 36..<68
+        var expectedAmount = Data(repeating: 0, count: 32)
+        expectedAmount[31] = 50
+        XCTAssertEqual(Data(calldata[36..<68]), expectedAmount)
+    }
+
     func testSettleChannelCalldataMatchesFullTransaction() throws {
         let addr = try EthAddress(hex: "0x" + String(repeating: "ef", count: 20))
         let channelId = Keccak256.hash(Data("channel".utf8))

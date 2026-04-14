@@ -592,9 +592,10 @@ class ProviderEngine: ObservableObject {
                 print("SessionSync: client spend=\(info.clientCumulativeSpend) < provider=\(missed.cumulativeSpend), recovering session \(request.sessionID.prefix(8))...")
             }
 
-            // Only replace channel if it's new or has different params (e.g., new keypair).
-            // Preserving the existing channel keeps voucher history (authorizedAmount).
-            if existingChannel?.channelId != info.channelId {
+            // Only replace channel if it's new, has different params, or deposit increased (top-up).
+            // Deposit increase triggers on-chain re-verification so the provider accepts larger vouchers.
+            let depositChanged = existingChannel.map { $0.deposit != info.deposit } ?? false
+            if existingChannel?.channelId != info.channelId || depositChanged {
                 // Record the old channel's settled baseline before overwriting (channel replacement path).
                 if let old = existingChannel { recordSettledBaseline(for: old) }
 

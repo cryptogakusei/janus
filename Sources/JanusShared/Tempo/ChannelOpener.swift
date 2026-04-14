@@ -40,11 +40,17 @@ public struct ChannelOpener: Sendable {
         let escrow = config.escrowContract
         let token = config.paymentToken
 
-        // Check if channel already exists on-chain
+        // Check if channel already exists on-chain.
+        // Use do/catch (not try?) so RPC failures surface as .failed rather than silently
+        // falling through to send transactions that will revert on an existing channel.
         let escrowClient = EscrowClient(rpc: rpc, escrowAddress: escrow)
-        if let onChain = try? await escrowClient.getChannel(channelId: channel.channelId),
-           onChain.exists {
-            return .alreadyOpen(channelId: channel.channelId)
+        do {
+            let onChain = try await escrowClient.getChannel(channelId: channel.channelId)
+            if onChain.exists {
+                return .alreadyOpen(channelId: channel.channelId)
+            }
+        } catch {
+            return .failed("RPC unavailable: cannot verify channel state before opening: \(error.localizedDescription)")
         }
 
         // Step 1: Fund via testnet faucet

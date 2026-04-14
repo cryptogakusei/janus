@@ -176,6 +176,7 @@ class ClientEngine: ObservableObject {
                 // it is not persisted, only the ETH keypair is. Without it channelInfo is nil
                 // and every request fails with INVALID_SESSION.
                 // openChannelOnChain() will find .alreadyOpen quickly and be a no-op.
+                bindChannelStatus(to: restored)
                 if restored.channel == nil, let ethAddr = connectedProvider?.providerEthAddress, !ethAddr.isEmpty {
                     restored.setupTempoChannel(providerEthAddress: ethAddr)
                 }
@@ -200,6 +201,8 @@ class ClientEngine: ObservableObject {
                     print("Discarding stale session creation for \(providerID.prefix(8))...")
                     return
                 }
+                sessionManager = manager
+                bindChannelStatus(to: manager)
                 if let ethAddr = connectedProvider?.providerEthAddress, !ethAddr.isEmpty {
                     // Gate sessionReady on channel confirmation
                     observeChannelOpening(on: manager)
@@ -208,19 +211,24 @@ class ClientEngine: ObservableObject {
                     // No Tempo channel — unblock immediately
                     sessionReady = true
                 }
-                sessionManager = manager
                 responseHistory = []
                 settlementStatus = .unverified
             }
         }
     }
 
-    /// Subscribe to a SessionManager's channel state and forward to published properties.
-    /// Sets `sessionReady = true` once the channel opens on-chain.
-    private func observeChannelOpening(on manager: SessionManager) {
+    /// Bind a SessionManager's channelOnChainStatus to channelStatus for all sessions,
+    /// including already-open ones (needed so top-up progress is visible).
+    private func bindChannelStatus(to manager: SessionManager) {
         manager.$channelOnChainStatus
             .receive(on: RunLoop.main)
             .assign(to: &$channelStatus)
+    }
+
+    /// Subscribe to a SessionManager's channel state and forward to published properties.
+    /// Sets `sessionReady = true` once the channel opens on-chain.
+    private func observeChannelOpening(on manager: SessionManager) {
+        bindChannelStatus(to: manager)
 
         manager.$channelOpenedOnChain
             .filter { $0 }
@@ -478,6 +486,16 @@ class ClientEngine: ObservableObject {
     private func cancelRequestTimeout() {
         requestTimeoutTask?.cancel()
         requestTimeoutTask = nil
+    }
+
+    var isWaitingForResponse: Bool {
+        requestState == .waitingForQuote || requestState == .waitingForResponse
+    }
+
+/// Top up the active channel. Disabled during in-flight inference to prevent race conditions.
+    func topUpChannel(additionalDeposit: UInt64) {
+        guard let manager = sessionManager, !isWaitingForResponse else { return }
+        Task { await manager.topUpChannel(additionalDeposit: additionalDeposit) }
     }
 
     /// Minimum credits needed (smallest pricing tier).

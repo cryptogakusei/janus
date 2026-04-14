@@ -215,6 +215,25 @@ final class TempoTests: XCTestCase {
         XCTAssertEqual(channel.unsettledAmount, 0) // all authorized amount is now settled
     }
 
+    func testChannelRecordTopUp_updatesCreditAvailability() throws {
+        let clientKP = try EthKeyPair()
+        let providerKP = try EthKeyPair()
+        let token = EthAddress(Data(repeating: 0, count: 20))
+        let salt = Keccak256.hash(Data("top-up-test".utf8))
+
+        var channel = Channel(payer: clientKP.address, payee: providerKP.address,
+                              token: token, salt: salt, authorizedSigner: clientKP.address,
+                              deposit: 100, config: config)
+
+        // At deposit=100, amount 120 is rejected
+        XCTAssertFalse(channel.canAuthorize(cumulativeAmount: 120), "Must not authorize above deposit")
+
+        // After top-up to 150, amount 120 is accepted
+        channel.recordTopUp(newDeposit: 150)
+        XCTAssertEqual(channel.deposit, 150)
+        XCTAssertTrue(channel.canAuthorize(cumulativeAmount: 120), "Must authorize after top-up increases deposit")
+    }
+
     func testMultipleVouchersMonotonic() throws {
         let clientKP = try EthKeyPair()
         let providerKP = try EthKeyPair()
