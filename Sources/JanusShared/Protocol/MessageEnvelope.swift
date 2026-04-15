@@ -59,6 +59,7 @@ public enum MessageType: String, Codable, Sendable {
     case relayAnnounce
     case ping
     case pong
+    case tabSettlementRequest   // Provider → Client: payment demand when tab threshold crossed
 }
 
 // MARK: - Shared JSON coding configuration

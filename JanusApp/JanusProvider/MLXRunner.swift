@@ -3,6 +3,13 @@ import MLXLMCommon
 import MLXLLM
 import JanusShared
 
+/// Output from a single inference run.
+struct InferenceResult: Sendable {
+    let outputText: String
+    /// Number of output tokens generated (used for tab-based billing).
+    let outputTokenCount: Int
+}
+
 /// Wraps mlx-swift-lm to load a model and run inference.
 ///
 /// Uses ChatSession for stateless single-turn interactions.
@@ -30,13 +37,13 @@ actor MLXRunner {
 
     /// Run a single inference request.
     ///
-    /// Returns the generated text. The caller is responsible for pricing tier
-    /// classification and payment verification — this layer only does inference.
+    /// Returns an `InferenceResult` with output text and token count.
+    /// Token count is used for tab-based per-token billing.
     func generate(
         prompt: String,
         taskType: TaskType,
         maxOutputTokens: Int
-    ) async throws -> String {
+    ) async throws -> InferenceResult {
         guard let container = modelContainer else {
             throw MLXRunnerError.modelNotLoaded
         }
@@ -51,7 +58,14 @@ actor MLXRunner {
         let fullPrompt = "\(systemPrompt)\n\nUser: \(userPrompt)"
         let rawResponse = try await session.respond(to: fullPrompt)
 
-        return Self.stripThinkingTags(rawResponse)
+        let cleanedText = Self.stripThinkingTags(rawResponse)
+
+        // Count output tokens for tab billing
+        let outputTokenCount = await container.perform { ctx in
+            ctx.tokenizer.encode(text: cleanedText, addSpecialTokens: false).count
+        }
+
+        return InferenceResult(outputText: cleanedText, outputTokenCount: outputTokenCount)
     }
 
     var isLoaded: Bool {

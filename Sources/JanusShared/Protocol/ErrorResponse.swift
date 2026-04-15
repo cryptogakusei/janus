@@ -24,5 +24,6 @@ public struct ErrorResponse: Codable, Sendable {
         case providerUnreachable = "PROVIDER_UNREACHABLE"
         case relayTimeout = "RELAY_TIMEOUT"
         case channelNotReady = "CHANNEL_NOT_READY"
+        case tabSettlementRequired = "TAB_SETTLEMENT_REQUIRED"
     }
 }

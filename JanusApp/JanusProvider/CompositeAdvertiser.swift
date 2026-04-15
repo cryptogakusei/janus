@@ -96,8 +96,14 @@ class CompositeAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTranspo
         try transport.send(envelope, to: senderID)
     }
 
-    func updateServiceAnnounce(providerPubkey: String, providerEthAddress: String?) {
-        mpcAdvertiser.updateServiceAnnounce(providerPubkey: providerPubkey, providerEthAddress: providerEthAddress)
-        bonjourAdvertiser.updateServiceAnnounce(providerPubkey: providerPubkey, providerEthAddress: providerEthAddress)
+    func updateServiceAnnounce(providerPubkey: String, providerEthAddress: String?,
+                               tokenRate: UInt64 = 10, tabThreshold: UInt64 = 500,
+                               maxOutputTokens: Int = 1024, paymentModel: String = "tab") {
+        mpcAdvertiser.updateServiceAnnounce(providerPubkey: providerPubkey, providerEthAddress: providerEthAddress,
+                                            tokenRate: tokenRate, tabThreshold: tabThreshold,
+                                            maxOutputTokens: maxOutputTokens, paymentModel: paymentModel)
+        bonjourAdvertiser.updateServiceAnnounce(providerPubkey: providerPubkey, providerEthAddress: providerEthAddress,
+                                                tokenRate: tokenRate, tabThreshold: tabThreshold,
+                                                maxOutputTokens: maxOutputTokens, paymentModel: paymentModel)
     }
 }

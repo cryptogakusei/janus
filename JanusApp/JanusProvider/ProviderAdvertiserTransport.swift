@@ -22,7 +22,9 @@ protocol ProviderAdvertiserTransport: AnyObject {
     func startAdvertising()
     func stopAdvertising()
     func send(_ envelope: MessageEnvelope, to senderID: String) throws
-    func updateServiceAnnounce(providerPubkey: String, providerEthAddress: String?)
+    func updateServiceAnnounce(providerPubkey: String, providerEthAddress: String?,
+                               tokenRate: UInt64, tabThreshold: UInt64,
+                               maxOutputTokens: Int, paymentModel: String)
 
     /// Look up the display name for a senderID.
     func displayName(forSender senderID: String) -> String?
@@ -39,6 +41,13 @@ protocol ProviderAdvertiserTransport: AnyObject {
 
 // Default implementations derived from connectedClients.
 extension ProviderAdvertiserTransport {
+    /// Convenience overload with tab-economics defaults — used by call sites that
+    /// haven't yet been wired up to configurable values (Feature #13e).
+    func updateServiceAnnounce(providerPubkey: String, providerEthAddress: String?) {
+        updateServiceAnnounce(providerPubkey: providerPubkey, providerEthAddress: providerEthAddress,
+                              tokenRate: 10, tabThreshold: 500, maxOutputTokens: 1024, paymentModel: "tab")
+    }
+
     func displayName(forSender senderID: String) -> String? {
         connectedClients[senderID]
     }

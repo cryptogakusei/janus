@@ -224,12 +224,20 @@ struct DualModeView: View {
 
             Divider()
 
-            Text("Pricing")
-                .font(.headline)
-            HStack(spacing: 16) {
-                priceBadge("Small", provider.pricing.small)
-                priceBadge("Medium", provider.pricing.medium)
-                priceBadge("Large", provider.pricing.large)
+            if provider.paymentModel == "tab" {
+                Text("Pricing (Pay-Per-Token)")
+                    .font(.headline)
+                infoRow("Rate", "\(provider.tokenRate * 1000) credits / M tokens")
+                infoRow("Tab threshold", "\(provider.tabThreshold) tokens")
+                infoRow("Max output", "\(provider.maxOutputTokens) tokens")
+            } else if let pricing = provider.pricing {
+                Text("Pricing")
+                    .font(.headline)
+                HStack(spacing: 16) {
+                    priceBadge("Small", pricing.small)
+                    priceBadge("Medium", pricing.medium)
+                    priceBadge("Large", pricing.large)
+                }
             }
 
             if let credits = engine.sessionManager?.remainingCredits {

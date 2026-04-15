@@ -26,6 +26,8 @@ struct ProviderCLI {
         print("Available tasks: translate, rewrite, summarize")
         print("Type 'quit' to exit.\n")
 
+        let maxOutputTokens = 1024
+
         while true {
             // Get task type
             print("Task (translate/rewrite/summarize): ", terminator: "")
@@ -46,27 +48,23 @@ struct ProviderCLI {
             guard let prompt = readLine()?.trimmingCharacters(in: .whitespaces),
                   !prompt.isEmpty else { continue }
 
-            // Classify pricing tier
-            let tier = PricingTier.classify(promptLength: prompt.count)
-            print("Pricing tier: \(tier.rawValue) (\(tier.credits) credits, max \(tier.maxOutputTokens) tokens)")
-
             // Run inference
             print("Generating...\n")
             let startTime = Date()
 
             do {
-                let response = try await runner.generate(
+                let result = try await runner.generate(
                     prompt: prompt,
                     taskType: taskType,
-                    maxOutputTokens: tier.maxOutputTokens
+                    maxOutputTokens: maxOutputTokens
                 )
 
                 let elapsed = Date().timeIntervalSince(startTime)
                 print("--- Response ---")
-                print(response)
+                print(result.outputText)
                 print("--- End ---")
-                print(String(format: "Time: %.1fs | Tier: %@ | Credits: %d\n",
-                             elapsed, tier.rawValue, tier.credits))
+                print(String(format: "Time: %.1fs | Tokens: %d\n",
+                             elapsed, result.outputTokenCount))
             } catch {
                 print("Inference error: \(error.localizedDescription)\n")
             }

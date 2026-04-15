@@ -10,7 +10,7 @@ private let smokeLog = OSLog(subsystem: "com.janus.provider", category: "SmokeTe
 
 /// Orchestrates the provider's full request pipeline.
 ///
-/// Handles: PromptRequest → QuoteResponse → VoucherAuthorization → inference → InferenceResponse.
+/// Handles: PromptRequest → inference → InferenceResponse + TabUpdate → (when threshold crossed) TabSettlementRequest → VoucherAuthorization → reset tab.
 /// Owns the MLX model, voucher verifier, channel state, and provider keypair.
 @MainActor
 class ProviderEngine: ObservableObject {
@@ -135,10 +135,16 @@ class ProviderEngine: ObservableObject {
     private let mlxRunner: MLXRunner
     private let store: JanusStore
 
-    // Pending quotes: quoteID → QuoteResponse (transient — not persisted)
-    private var pendingQuotes: [String: QuoteResponse] = [:]
     // Last response per session — for SessionSync recovery if client missed it
     private var lastResponses: [String: InferenceResponse] = [:]
+
+    // Tab payment state
+    /// Running token tab per client channel ID (hex). Derived from tabByChannelId[hex] >= tabThresholdTokens for blocking.
+    private var tabByChannelId: [String: UInt64] = [:]
+    /// channelId hex → requestID of outstanding TabSettlementRequest. Persisted for crash recovery + replay prevention.
+    private var pendingTabSettlementByChannelId: [String: String] = [:]
+    private let tokenRate: UInt64 = 10          // credits per 1000 tokens
+    private let tabThresholdTokens: UInt64 = 500 // tokens before settlement required
 
     // Tempo voucher path
     private var channels: [String: Channel] = [:] {         // sessionID → Channel
@@ -209,6 +215,13 @@ class ProviderEngine: ObservableObject {
             }
             if let threshold = persisted.settlementThreshold {
                 self.settlementThreshold = threshold
+            }
+            // Restore tab payment state — prevents clients escaping debt via reconnect
+            if let tabs = persisted.tabByChannelId {
+                self.tabByChannelId = tabs
+            }
+            if let pending = persisted.pendingTabSettlementByChannelId {
+                self.pendingTabSettlementByChannelId = pending
             }
             print("Restored provider state: \(persisted.totalRequestsServed) served")
         } else {
@@ -543,7 +556,12 @@ class ProviderEngine: ObservableObject {
             Task { await handlePromptRequest(request, senderID: envelope.senderID) }
         case .voucherAuthorization:
             guard let auth = try? envelope.unwrap(as: VoucherAuthorization.self) else { return }
-            Task { await handleVoucherAuthorization(auth) }
+            if auth.quoteID == nil {
+                Task { await handleTabSettlementVoucher(auth) }  // tab settlement
+            }
+            // Prepaid vouchers (quoteID non-nil) silently dropped — provider is tab-only
+        case .tabSettlementRequest:
+            break  // Provider sends, never receives
         default:
             break
         }
@@ -562,12 +580,21 @@ class ProviderEngine: ObservableObject {
             sessionToIdentity[request.sessionID] = identity
         }
 
-        // Cache the request for later lookup during VoucherAuthorization
-        cacheRequest(request)
-
         // If channel info included, verify and cache
         if let info = request.channelInfo, let vv = voucherVerifier {
-            let result = await vv.verifyChannelInfoOnChain(info)
+            let existingChannel = channels[request.sessionID]
+            let depositChanged = existingChannel.map { $0.deposit != info.deposit } ?? false
+            let channelChanged = existingChannel?.channelId != info.channelId || depositChanged
+
+            // Only hit the RPC for new or changed channels — known channels skip the network call
+            // to avoid the 15-second RPC timeout blocking inference on every offline request.
+            let result: ChannelVerificationResult
+            if channelChanged {
+                result = await vv.verifyChannelInfoOnChain(info)
+            } else {
+                result = .rpcUnavailable  // channel already known; treat as offline-accepted
+            }
+
             switch result {
             case .acceptedOnChain, .rpcUnavailable:
                 break  // proceed; rpcUnavailable is safe — supports offline inference after initial handshake
@@ -584,7 +611,6 @@ class ProviderEngine: ObservableObject {
             // Detect missed response: compare client's reported spend with our last
             // response. If the client's spend is behind, they missed the response and
             // need SessionSync to recover. If equal, they got it (idle reconnect).
-            let existingChannel = channels[request.sessionID]
             if existingChannel != nil, let missed = lastResponses[request.sessionID],
                info.clientCumulativeSpend < missed.cumulativeSpend {
                 let sync = SessionSync(sessionID: request.sessionID, missedResponse: missed)
@@ -593,9 +619,7 @@ class ProviderEngine: ObservableObject {
             }
 
             // Only replace channel if it's new, has different params, or deposit increased (top-up).
-            // Deposit increase triggers on-chain re-verification so the provider accepts larger vouchers.
-            let depositChanged = existingChannel.map { $0.deposit != info.deposit } ?? false
-            if existingChannel?.channelId != info.channelId || depositChanged {
+            if channelChanged {
                 // Record the old channel's settled baseline before overwriting (channel replacement path).
                 if let old = existingChannel { recordSettledBaseline(for: old) }
 
@@ -609,11 +633,9 @@ class ProviderEngine: ObservableObject {
                 // whose cumulative voucher amounts include previously-settled spend.
                 if case .acceptedOnChain(_, let onChainSettled) = result, onChainSettled > 0 {
                     channel.recordSettlement(amount: onChainSettled)
-                    // Keep cache in sync with authoritative on-chain value
                     settledChannelAmounts[info.channelId.ethHexPrefixed] = onChainSettled
                     print("Initialized settledAmount=\(onChainSettled) from on-chain for session \(request.sessionID.prefix(8))...")
                 } else if case .rpcUnavailable = result {
-                    // RPC unavailable — fall back to locally persisted settled amount if known
                     let key = info.channelId.ethHexPrefixed
                     if let cached = settledChannelAmounts[key], cached > 0 {
                         channel.recordSettlement(amount: cached)
@@ -633,8 +655,8 @@ class ProviderEngine: ObservableObject {
                 os_log("CLIENT_CHANNEL_PAYER=%{public}@", log: smokeLog, type: .default, info.payerAddress.checksumAddress)
                 os_log("CLIENT_CHANNEL_ID=%{public}@", log: smokeLog, type: .default, info.channelId.ethHexPrefixed)
                 os_log("CLIENT_CHANNEL_DEPOSIT=%{public}d", log: smokeLog, type: .default, info.deposit)
-            } else if existingChannel != nil {
-                print("Tempo channel unchanged for session \(request.sessionID.prefix(8))... (same channelId)")
+            } else {
+                print("Tempo channel unchanged for session \(request.sessionID.prefix(8))... (skipping RPC)")
             }
         }
 
@@ -652,74 +674,159 @@ class ProviderEngine: ObservableObject {
             return
         }
 
-        // Classify pricing tier and generate quote
-        let tier = PricingTier.classify(promptLength: request.promptText.count)
-        let quote = QuoteResponse(
+        guard let channel = channels[request.sessionID] else { return }
+        let channelIdHex = channel.channelId.map { String(format: "%02x", $0) }.joined()
+
+        // 1. Check deposit sufficiency (must cover at least one full tab cycle above current authorized amount).
+        // Use deposit - authorizedAmount, not remainingDeposit (deposit - settled), because
+        // unsettled-but-authorized credits are already committed — vouchers can't exceed deposit.
+        let maxSettlementCredits = (tabThresholdTokens * tokenRate + 999) / 1000
+        guard channel.deposit - channel.authorizedAmount >= maxSettlementCredits else {
+            sendError(requestID: request.requestID, sessionID: request.sessionID,
+                      code: .insufficientCredits, message: "Channel deposit too small. Top up required.")
+            return
+        }
+
+        // 2. Block + re-send settlement request if tab still at threshold
+        //    (handles lost settlement message + post-restart recovery)
+        let currentTab = tabByChannelId[channelIdHex] ?? 0
+        if currentTab >= tabThresholdTokens {
+            let tabCredits = max(1, (currentTab * tokenRate + 999) / 1000)
+            let settleRequestID = pendingTabSettlementByChannelId[channelIdHex] ?? UUID().uuidString
+            pendingTabSettlementByChannelId[channelIdHex] = settleRequestID
+            sendSettlementRequest(tabCredits: tabCredits, requestID: settleRequestID,
+                                  channel: channel, sessionID: request.sessionID)
+            sendError(requestID: request.requestID, sessionID: request.sessionID,
+                      code: .tabSettlementRequired, message: "Tab threshold reached. Settle balance to continue.")
+            persistState()
+            return
+        }
+
+        // 3. Run inference
+        let inferenceResult: InferenceResult
+        do {
+            inferenceResult = try await mlxRunner.generate(
+                prompt: request.promptText,
+                taskType: request.taskType,
+                maxOutputTokens: request.maxOutputTokens ?? 1024
+            )
+        } catch {
+            sendError(requestID: request.requestID, sessionID: request.sessionID,
+                      code: .inferenceFailed, message: "Inference failed: \(error)")
+            return
+        }
+
+        // 4. Update tab (min 1 to prevent 0-credit monotonicity violation)
+        let tokensUsed = UInt64(max(1, inferenceResult.outputTokenCount))
+        let newTab = currentTab + tokensUsed
+        tabByChannelId[channelIdHex] = newTab
+
+        // 5. Compute credits (ceiling division, min 1)
+        let creditsCharged = Int(max(1, (tokensUsed * tokenRate + 999) / 1000))
+        let cumulativeForReceipt = Int(channel.authorizedAmount) + creditsCharged
+
+        // 6. Sign receipt + send response with embedded TabUpdate
+        let receipt = signReceipt(
+            sessionID: request.sessionID,
             requestID: request.requestID,
-            priceCredits: tier.credits,
-            priceTier: tier.rawValue,
-            expiresAt: Date().addingTimeInterval(60)
+            creditsCharged: creditsCharged,
+            cumulativeSpend: cumulativeForReceipt
         )
+        receiptsIssued.append(receipt)
 
-        // Cache the quote and clean up expired ones
-        pendingQuotes[quote.quoteID] = quote
-        cleanupExpiredQuotes()
+        let response = InferenceResponse(
+            requestID: request.requestID,
+            outputText: inferenceResult.outputText,
+            creditsCharged: creditsCharged,
+            cumulativeSpend: cumulativeForReceipt,
+            receipt: receipt,
+            tabUpdate: TabUpdate(
+                tokensUsed: tokensUsed,
+                cumulativeTabTokens: newTab,
+                tabThreshold: tabThresholdTokens
+            )
+        )
+        lastResponses[request.sessionID] = response
+        send(type: .inferenceResponse, payload: response, toSession: request.sessionID)
 
-        // Send quote to client
-        send(type: .quoteResponse, payload: quote, toSession: request.sessionID)
+        lastResponse = inferenceResult.outputText.prefix(100) + (inferenceResult.outputText.count > 100 ? "..." : "")
+        totalRequestsServed += 1
+        totalCreditsEarned += creditsCharged
+
+        appendLog(LogEntry(
+            timestamp: Date(),
+            taskType: request.taskType.rawValue,
+            promptPreview: String(request.promptText.prefix(60)),
+            responsePreview: String(inferenceResult.outputText.prefix(80)),
+            credits: creditsCharged,
+            isError: false,
+            sessionID: request.sessionID
+        ))
+
+        // 7. Check threshold — send settlement request if crossed
+        if newTab >= tabThresholdTokens {
+            let tabCredits = max(1, (newTab * tokenRate + 999) / 1000)
+            let settleRequestID = UUID().uuidString
+            pendingTabSettlementByChannelId[channelIdHex] = settleRequestID
+            sendSettlementRequest(tabCredits: tabCredits, requestID: settleRequestID,
+                                  channel: channel, sessionID: request.sessionID)
+        }
+
+        persistState()
     }
 
-    // MARK: - Voucher authorization
+    private func sendSettlementRequest(tabCredits: UInt64, requestID: String, channel: Channel, sessionID: String) {
+        let req = TabSettlementRequest(
+            requestID: requestID,
+            tabCredits: tabCredits,
+            channelId: channel.channelId
+        )
+        send(type: .tabSettlementRequest, payload: req, toSession: sessionID)
+        print("Tab settlement requested: \(tabCredits) credits, requestID=\(requestID.prefix(8))..., session=\(sessionID.prefix(8))...")
+    }
 
-    private func handleVoucherAuthorization(_ auth: VoucherAuthorization) async {
-        // Find the channel by matching the voucher's channelId to a known session
-        guard let (sessionID, channel) = channels.first(where: { $0.value.channelId == auth.channelId }) else {
-            // Try to find a session to route the error back
-            // The requestID from a pending quote can help us find the session
-            if let quote = pendingQuotes[auth.quoteID],
-               let cachedRequest = requestCache[quote.requestID] {
-                sendError(requestID: auth.requestID, sessionID: cachedRequest.sessionID,
-                          code: .invalidSession, message: "Unknown payment channel — reconnect and retry")
-            }
-            print("VoucherAuth rejected: unknown channel \(auth.channelId.ethHexPrefixed.prefix(18))...")
+    // MARK: - Tab settlement voucher
+
+    private func handleTabSettlementVoucher(_ auth: VoucherAuthorization) async {
+        guard let (sessionID, channelSnapshot) = channels.first(where: { $0.value.channelId == auth.channelId }) else {
+            print("TabSettlementVoucher rejected: unknown channel \(auth.channelId.ethHexPrefixed.prefix(18))...")
             return
         }
-        guard let vv = voucherVerifier else {
-            sendError(requestID: auth.requestID, sessionID: sessionID,
-                      code: .invalidSession, message: "Voucher verification not available")
-            return
-        }
-        guard let quote = pendingQuotes[auth.quoteID] else {
-            sendError(requestID: auth.requestID, sessionID: sessionID,
-                      code: .expiredQuote, message: "Quote not found or expired")
+        var channel = channelSnapshot
+        let channelIdHex = channel.channelId.map { String(format: "%02x", $0) }.joined()
+
+        // Replay prevention: requestID must match the outstanding settlement request
+        guard let expectedRequestID = pendingTabSettlementByChannelId[channelIdHex],
+              auth.requestID == expectedRequestID else {
+            print("TabSettlementVoucher rejected: requestID mismatch for channel \(channelIdHex.prefix(18))...")
             return
         }
 
-        // Verify the voucher
-        let accepted: VoucherVerifier.Accepted
+        guard let vv = voucherVerifier else { return }
+        let tabTokens = tabByChannelId[channelIdHex] ?? 0
+        let tabCredits = max(1, (tabTokens * tokenRate + 999) / 1000)
+
         do {
-            accepted = try vv.verify(authorization: auth, channel: channel, quote: quote)
-        } catch let error as VoucherVerificationError {
-            sendError(requestID: auth.requestID, sessionID: sessionID,
-                      code: error.errorCode, message: "\(error)")
-            return
+            _ = try vv.verifyTabSettlement(authorization: auth, channel: channel, tabCredits: tabCredits)
+            try channel.acceptVoucher(auth.signedVoucher)
+            channels[sessionID] = channel
         } catch {
-            sendError(requestID: auth.requestID, sessionID: sessionID,
-                      code: .invalidSignature, message: "Voucher verification failed: \(error)")
+            print("Tab settlement rejected: \(error)")
             return
         }
 
-        // Accept voucher into channel state
-        do {
-            try channels[sessionID]?.acceptVoucher(auth.signedVoucher)
-            persistState()  // Critical: persist immediately — this voucher is real money owed
-        } catch {
-            sendError(requestID: auth.requestID, sessionID: sessionID,
-                      code: .invalidSignature, message: "Channel rejected voucher: \(error)")
-            return
-        }
+        // Log settlement data
+        print("TAB SETTLEMENT ACCEPTED — settlement data:")
+        print("  channelId: \(auth.channelId.ethHexPrefixed)")
+        print("  tabCredits: \(tabCredits), cumulativeAmount: \(auth.cumulativeAmount)")
+        print("  signature: \(auth.signedVoucher.signatureBytes.ethHexPrefixed)")
 
-        // Check aggregate threshold for auto-settlement
+        // Reset tab and clear pending settlement
+        tabByChannelId[channelIdHex] = 0
+        pendingTabSettlementByChannelId.removeValue(forKey: channelIdHex)
+        persistState()
+
+        // Check aggregate threshold for on-chain settlement
         let pending = pendingSettlementCredits
         if settlementThreshold > 0 && pending >= settlementThreshold {
             let breakdown = channels.filter { $0.value.unsettledAmount > 0 }
@@ -728,93 +835,6 @@ class ProviderEngine: ObservableObject {
             print("Threshold settlement triggered: \(pending) >= \(settlementThreshold) [\(breakdown)]")
             Task { await settleAllChannelsOnChain(isRetry: true, removeAfterSettlement: false) }
         }
-
-        // Log settlement data (needed for manual on-chain settlement via cast)
-        print("VOUCHER ACCEPTED — settlement data:")
-        print("  channelId: \(auth.channelId.ethHexPrefixed)")
-        print("  cumulativeAmount: \(auth.cumulativeAmount)")
-        print("  signature: \(auth.signedVoucher.signatureBytes.ethHexPrefixed)")
-
-        // Remove used quote
-        pendingQuotes.removeValue(forKey: auth.quoteID)
-
-        // Run inference
-        let outputText: String
-        do {
-            let tier = PricingTier(rawValue: quote.priceTier) ?? .medium
-            let taskType = cachedTaskType(for: auth.requestID) ?? .summarize
-            outputText = try await mlxRunner.generate(
-                prompt: cachedPrompt(for: auth.requestID) ?? "",
-                taskType: taskType,
-                maxOutputTokens: tier.maxOutputTokens
-            )
-        } catch {
-            sendError(requestID: auth.requestID, sessionID: sessionID,
-                      code: .inferenceFailed, message: "Inference failed: \(error)")
-            return
-        }
-
-        // Create signed receipt (Ed25519 provider signature for non-repudiation)
-        let receipt = signReceipt(
-            sessionID: sessionID,
-            requestID: auth.requestID,
-            creditsCharged: accepted.creditsCharged,
-            cumulativeSpend: Int(accepted.newCumulativeAmount)
-        )
-        receiptsIssued.append(receipt)
-
-        // Send response
-        let response = InferenceResponse(
-            requestID: auth.requestID,
-            outputText: outputText,
-            creditsCharged: accepted.creditsCharged,
-            cumulativeSpend: Int(accepted.newCumulativeAmount),
-            receipt: receipt
-        )
-        lastResponses[sessionID] = response
-        send(type: .inferenceResponse, payload: response, toSession: sessionID)
-
-        lastResponse = outputText.prefix(100) + (outputText.count > 100 ? "..." : "")
-        totalRequestsServed += 1
-        totalCreditsEarned += accepted.creditsCharged
-
-        let taskType = cachedTaskType(for: auth.requestID) ?? .summarize
-        appendLog(LogEntry(
-            timestamp: Date(),
-            taskType: taskType.rawValue,
-            promptPreview: String((cachedPrompt(for: auth.requestID) ?? "").prefix(60)),
-            responsePreview: String(outputText.prefix(80)),
-            credits: accepted.creditsCharged,
-            isError: false,
-            sessionID: sessionID
-        ))
-
-        requestCache.removeValue(forKey: auth.requestID)
-    }
-
-    // MARK: - Request context cache
-
-    // Cache prompt requests so we can look up task type and prompt text
-    // when the VoucherAuthorization arrives
-    private var requestCache: [String: PromptRequest] = [:]
-
-    func cacheRequest(_ request: PromptRequest) {
-        requestCache[request.requestID] = request
-    }
-
-    private func cachedTaskType(for requestID: String) -> TaskType? {
-        requestCache[requestID]?.taskType
-    }
-
-    private func cachedPrompt(for requestID: String) -> String? {
-        requestCache[requestID]?.promptText
-    }
-
-    // MARK: - Cleanup
-
-    private func cleanupExpiredQuotes() {
-        let now = Date()
-        pendingQuotes = pendingQuotes.filter { $0.value.expiresAt > now }
     }
 
     // MARK: - Helpers
@@ -917,7 +937,9 @@ class ProviderEngine: ObservableObject {
             sessionToIdentity: unsettledIdentities.isEmpty ? nil : unsettledIdentities,
             settlementIntervalSeconds: settlementIntervalSeconds,
             settlementThreshold: settlementThreshold,
-            settledChannelAmounts: settledChannelAmounts.isEmpty ? nil : settledChannelAmounts
+            settledChannelAmounts: settledChannelAmounts.isEmpty ? nil : settledChannelAmounts,
+            tabByChannelId: tabByChannelId.isEmpty ? nil : tabByChannelId,
+            pendingTabSettlementByChannelId: pendingTabSettlementByChannelId.isEmpty ? nil : pendingTabSettlementByChannelId
         )
         do {
             try store.save(state, as: Self.filename)

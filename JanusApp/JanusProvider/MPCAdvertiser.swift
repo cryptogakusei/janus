@@ -65,12 +65,18 @@ class MPCAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTransport {
 
     /// Update the ServiceAnnounce with provider identity (pubkey + Ethereum address).
     /// Called after ProviderEngine has initialized its keypairs.
-    func updateServiceAnnounce(providerPubkey: String, providerEthAddress: String?) {
+    func updateServiceAnnounce(providerPubkey: String, providerEthAddress: String?,
+                               tokenRate: UInt64 = 10, tabThreshold: UInt64 = 500,
+                               maxOutputTokens: Int = 1024, paymentModel: String = "tab") {
         serviceAnnounce = ServiceAnnounce(
             providerID: serviceAnnounce.providerID,
             providerName: serviceAnnounce.providerName,
             providerPubkey: providerPubkey,
-            providerEthAddress: providerEthAddress
+            providerEthAddress: providerEthAddress,
+            tokenRate: tokenRate,
+            tabThreshold: tabThreshold,
+            maxOutputTokens: maxOutputTokens,
+            paymentModel: paymentModel
         )
     }
 

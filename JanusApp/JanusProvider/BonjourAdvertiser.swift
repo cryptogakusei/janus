@@ -147,12 +147,18 @@ class BonjourAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTransport
         })
     }
 
-    func updateServiceAnnounce(providerPubkey: String, providerEthAddress: String?) {
+    func updateServiceAnnounce(providerPubkey: String, providerEthAddress: String?,
+                               tokenRate: UInt64 = 10, tabThreshold: UInt64 = 500,
+                               maxOutputTokens: Int = 1024, paymentModel: String = "tab") {
         serviceAnnounce = ServiceAnnounce(
             providerID: serviceAnnounce.providerID,
             providerName: serviceAnnounce.providerName,
             providerPubkey: providerPubkey,
-            providerEthAddress: providerEthAddress
+            providerEthAddress: providerEthAddress,
+            tokenRate: tokenRate,
+            tabThreshold: tabThreshold,
+            maxOutputTokens: maxOutputTokens,
+            paymentModel: paymentModel
         )
     }
 

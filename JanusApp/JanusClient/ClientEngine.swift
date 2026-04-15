@@ -4,7 +4,8 @@ import JanusShared
 
 /// Orchestrates the client's request flow over MPC.
 ///
-/// State machine: idle → waitingForQuote → waitingForResponse → complete/error
+/// State machine: idle → waitingForResponse → complete/error
+/// Tab model: idle → awaitingSettlement (auto-signs voucher) → idle → waitingForResponse
 /// Owns the transport and SessionManager, and drives the UI.
 ///
 /// Forwards transport's published properties so SwiftUI views can observe
@@ -26,7 +27,7 @@ class ClientEngine: ObservableObject {
 
     // Request flow state
     @Published var requestState: RequestState = .idle
-    @Published var currentQuote: QuoteResponse?
+    @Published var pendingSettlement: TabSettlementRequest?
     @Published var lastResult: InferenceResponse?
     @Published var errorMessage: String?
 
@@ -41,8 +42,8 @@ class ClientEngine: ObservableObject {
 
     enum RequestState: String {
         case idle = "Ready"
-        case waitingForQuote = "Getting quote..."
         case waitingForResponse = "Processing..."
+        case awaitingSettlement = "Settling tab..."
         case complete = "Done"
         case error = "Error"
     }
@@ -83,7 +84,7 @@ class ClientEngine: ObservableObject {
                     self?.createSession(providerID: provider.providerID)
                 } else {
                     // Detect disconnect during active request
-                    if let self, self.requestState == .waitingForQuote || self.requestState == .waitingForResponse {
+                    if let self, self.requestState == .waitingForResponse || self.requestState == .awaitingSettlement {
                         self.cancelRequestTimeout()
                         self.disconnectedDuringRequest = true
                         self.errorMessage = "Provider disconnected during request"
@@ -277,9 +278,9 @@ class ClientEngine: ObservableObject {
                 payload: request
             )
             try transport.send(envelope)
-            requestState = .waitingForQuote
+            requestState = .waitingForResponse
             errorMessage = nil
-            currentQuote = nil
+            pendingSettlement = nil
             lastResult = nil
             startRequestTimeout(requestID: requestID)
         } catch {
@@ -292,12 +293,12 @@ class ClientEngine: ObservableObject {
 
     func handleMessage(_ envelope: MessageEnvelope) {
         switch envelope.type {
-        case .quoteResponse:
-            guard let quote = try? envelope.unwrap(as: QuoteResponse.self) else { return }
-            handleQuote(quote)
         case .inferenceResponse:
             guard let response = try? envelope.unwrap(as: InferenceResponse.self) else { return }
             handleInferenceResponse(response)
+        case .tabSettlementRequest:
+            guard let req = try? envelope.unwrap(as: TabSettlementRequest.self) else { return }
+            handleTabSettlementRequest(req)
         case .sessionSync:
             guard let sync = try? envelope.unwrap(as: SessionSync.self) else { return }
             handleSessionSync(sync)
@@ -309,19 +310,16 @@ class ClientEngine: ObservableObject {
         }
     }
 
-    private func handleQuote(_ quote: QuoteResponse) {
-        guard quote.requestID == pendingRequestID else { return }
-        currentQuote = quote
-
-        // Auto-accept: sign a Tempo voucher and send authorization
+    private func handleTabSettlementRequest(_ req: TabSettlementRequest) {
+        pendingSettlement = req
+        requestState = .awaitingSettlement
         guard let session = sessionManager else { return }
-
         Task {
             do {
-                let auth = try await session.createVoucherAuthorization(
-                    requestID: quote.requestID,
-                    quoteID: quote.quoteID,
-                    priceCredits: quote.priceCredits
+                let auth = try await session.createTabSettlementVoucher(
+                    requestID: req.requestID,
+                    tabCredits: req.tabCredits,
+                    channelId: req.channelId
                 )
                 let envelope = try MessageEnvelope.wrap(
                     type: .voucherAuthorization,
@@ -329,9 +327,11 @@ class ClientEngine: ObservableObject {
                     payload: auth
                 )
                 try transport.send(envelope)
-                requestState = .waitingForResponse
+                session.recordTabSettlement(tabCredits: req.tabCredits)
+                pendingSettlement = nil
+                requestState = .idle
             } catch {
-                errorMessage = "Failed to authorize: \(error.localizedDescription)"
+                errorMessage = "Tab settlement failed: \(error.localizedDescription)"
                 requestState = .error
             }
         }
@@ -340,14 +340,18 @@ class ClientEngine: ObservableObject {
     private func handleInferenceResponse(_ response: InferenceResponse) {
         guard response.requestID == pendingRequestID else { return }
 
-        // Verify the charged amount matches the quoted price
-        if let quote = currentQuote, response.creditsCharged != quote.priceCredits {
-            errorMessage = "Provider charged \(response.creditsCharged) but quoted \(quote.priceCredits)"
-            requestState = .error
-            pendingRequestID = nil
-            pendingTaskType = nil
-            pendingPromptText = nil
-            return
+        // Tab model: verify creditsCharged matches tokenRate × tokensUsed
+        if let tabUpdate = response.tabUpdate, let provider = connectedProvider, provider.paymentModel == "tab" {
+            let expected = Int(max(1, (tabUpdate.tokensUsed * provider.tokenRate + 999) / 1000))
+            guard response.creditsCharged == expected else {
+                errorMessage = "Provider charged \(response.creditsCharged) but token count implies \(expected)"
+                requestState = .error
+                pendingRequestID = nil
+                pendingTaskType = nil
+                pendingPromptText = nil
+                return
+            }
+            sessionManager?.applyTabUpdate(tabUpdate, tokenRate: provider.tokenRate)
         }
 
         // Verify the provider's receipt signature before accepting
@@ -452,6 +456,10 @@ class ClientEngine: ObservableObject {
             pendingPromptText = nil
             return
         }
+        if error.errorCode == .tabSettlementRequired {
+            // Tab settlement is being handled by handleTabSettlementRequest — ignore the paired error
+            return
+        }
         errorMessage = "[\(error.errorCode.rawValue)] \(error.errorMessage)"
         requestState = .error
         pendingRequestID = nil
@@ -470,7 +478,7 @@ class ClientEngine: ObservableObject {
             try? await Task.sleep(nanoseconds: 20_000_000_000) // 20 seconds
             guard !Task.isCancelled,
                   pendingRequestID == requestID,
-                  requestState == .waitingForQuote || requestState == .waitingForResponse else { return }
+                  requestState == .waitingForResponse else { return }
             errorMessage = "Request timed out — provider may be unreachable"
             requestState = .error
             pendingRequestID = nil
@@ -485,7 +493,7 @@ class ClientEngine: ObservableObject {
     }
 
     var isWaitingForResponse: Bool {
-        requestState == .waitingForQuote || requestState == .waitingForResponse
+        requestState == .waitingForResponse
     }
 
 /// Top up the active channel. Disabled during in-flight inference to prevent race conditions.
@@ -494,9 +502,9 @@ class ClientEngine: ObservableObject {
         Task { await manager.topUpChannel(additionalDeposit: additionalDeposit) }
     }
 
-    /// Minimum credits needed (smallest pricing tier).
     var canAffordRequest: Bool {
-        (sessionManager?.remainingCredits ?? 0) >= PricingTier.small.credits
+        guard requestState != .awaitingSettlement else { return false }
+        return (sessionManager?.remainingCredits ?? 0) > 0
     }
 
     // MARK: - Settlement verification

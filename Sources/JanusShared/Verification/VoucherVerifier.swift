@@ -94,6 +94,68 @@ public struct VoucherVerifier: Sendable {
         )
     }
 
+    /// Verify a tab settlement voucher.
+    ///
+    /// Used in the postpaid tab model where the client signs a voucher reactively
+    /// (after inference, when the tab threshold is crossed). No QuoteResponse involved.
+    ///
+    /// Checks performed:
+    /// 1. Channel is open
+    /// 2. Channel payee matches this provider
+    /// 3. Voucher channel ID matches
+    /// 4. Voucher amount is monotonically increasing
+    /// 5. Voucher increment covers the tab credits owed
+    /// 6. Voucher amount doesn't exceed channel deposit
+    /// 7. EIP-712 signature recovers to the channel's authorized signer
+    public func verifyTabSettlement(
+        authorization auth: VoucherAuthorization,
+        channel: Channel,
+        tabCredits: UInt64
+    ) throws -> Accepted {
+
+        // 1. Channel is open
+        guard channel.state == .open else {
+            throw VoucherVerificationError.channelNotOpen
+        }
+
+        // 2. Payee matches this provider
+        guard channel.payee == providerAddress else {
+            throw VoucherVerificationError.wrongProvider
+        }
+
+        // 3. Voucher channel ID matches
+        guard auth.channelId == channel.channelId else {
+            throw VoucherVerificationError.channelMismatch
+        }
+
+        // 4. Voucher amount is monotonically increasing
+        guard auth.cumulativeAmount > channel.authorizedAmount else {
+            throw VoucherVerificationError.nonMonotonicVoucher
+        }
+
+        // 5. Increment covers the tab credits owed
+        let increment = auth.cumulativeAmount - channel.authorizedAmount
+        guard increment >= tabCredits else {
+            throw VoucherVerificationError.insufficientAmount
+        }
+
+        // 6. Doesn't exceed deposit
+        guard auth.cumulativeAmount <= channel.deposit else {
+            throw VoucherVerificationError.exceedsDeposit
+        }
+
+        // 7. EIP-712 signature valid (ecrecover)
+        guard Voucher.verify(
+            signedVoucher: auth.signedVoucher,
+            expectedSigner: channel.authorizedSigner,
+            config: config
+        ) else {
+            throw VoucherVerificationError.invalidSignature
+        }
+
+        return Accepted(creditsCharged: Int(tabCredits), newCumulativeAmount: auth.cumulativeAmount)
+    }
+
     /// Verify channel info from a client's first request (off-chain only).
     ///
     /// Reconstructs the channel ID from the provided parameters and checks it matches.

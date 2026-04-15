@@ -136,6 +136,13 @@ public struct PersistedProviderState: Codable, Sendable {
     /// Settled amount per channelId (hex) — persisted for settledAmount recovery when RPC is
     /// unavailable on reconnect. Updated on every persist so periodic settlement is covered.
     public var settledChannelAmounts: [String: UInt64]?
+    /// Running token tab per client channel ID (hex). Persists across restarts so clients cannot
+    /// escape debt by disconnecting and reconnecting.
+    public var tabByChannelId: [String: UInt64]?
+    /// channelId hex → requestID of the outstanding TabSettlementRequest for that client.
+    /// Persists for crash recovery (provider re-sends settlement request on reconnect)
+    /// and replay prevention (voucher requestID must match this value).
+    public var pendingTabSettlementByChannelId: [String: String]?
 
     public init(
         providerID: String,
@@ -149,7 +156,9 @@ public struct PersistedProviderState: Codable, Sendable {
         sessionToIdentity: [String: String]? = nil,
         settlementIntervalSeconds: Int? = nil,
         settlementThreshold: Int? = nil,
-        settledChannelAmounts: [String: UInt64]? = nil
+        settledChannelAmounts: [String: UInt64]? = nil,
+        tabByChannelId: [String: UInt64]? = nil,
+        pendingTabSettlementByChannelId: [String: String]? = nil
     ) {
         self.providerID = providerID
         self.privateKeyBase64 = privateKeyBase64
@@ -163,6 +172,8 @@ public struct PersistedProviderState: Codable, Sendable {
         self.settlementIntervalSeconds = settlementIntervalSeconds
         self.settlementThreshold = settlementThreshold
         self.settledChannelAmounts = settledChannelAmounts
+        self.tabByChannelId = tabByChannelId
+        self.pendingTabSettlementByChannelId = pendingTabSettlementByChannelId
     }
 
     /// Custom decoder: defaults new fields when missing (backwards compatibility).
@@ -180,6 +191,8 @@ public struct PersistedProviderState: Codable, Sendable {
         settlementIntervalSeconds = try container.decodeIfPresent(Int.self, forKey: .settlementIntervalSeconds)
         settlementThreshold = try container.decodeIfPresent(Int.self, forKey: .settlementThreshold)
         settledChannelAmounts = try container.decodeIfPresent([String: UInt64].self, forKey: .settledChannelAmounts)
+        tabByChannelId = try container.decodeIfPresent([String: UInt64].self, forKey: .tabByChannelId)
+        pendingTabSettlementByChannelId = try container.decodeIfPresent([String: String].self, forKey: .pendingTabSettlementByChannelId)
     }
 }
 

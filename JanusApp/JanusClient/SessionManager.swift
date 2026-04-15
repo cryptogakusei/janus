@@ -20,6 +20,11 @@ class SessionManager: ObservableObject {
     @Published var lastChannelId: Data?
     @Published var lastVerifiedSettlement: UInt64?
 
+    // Tab payment state — updated by provider via TabUpdate embedded in InferenceResponse
+    @Published var currentTabTokens: UInt64 = 0
+    @Published var tabThreshold: UInt64 = 500
+    @Published var tokenRate: UInt64 = 10
+
     let clientKeyPair: JanusKeyPair
     let sessionGrant: SessionGrant
     private(set) var spendState: SpendState
@@ -311,6 +316,46 @@ class SessionManager: ObservableObject {
         let voucher = Voucher(channelId: ch.channelId, cumulativeAmount: newCumulative)
         let signed = try await wp.signVoucher(voucher, config: tempoConfig)
         return VoucherAuthorization(requestID: requestID, quoteID: quoteID, signedVoucher: signed)
+    }
+
+    /// Update local tab state from the TabUpdate embedded in each InferenceResponse.
+    func applyTabUpdate(_ tabUpdate: TabUpdate, tokenRate: UInt64) {
+        currentTabTokens = tabUpdate.cumulativeTabTokens
+        tabThreshold = tabUpdate.tabThreshold
+        self.tokenRate = tokenRate
+    }
+
+    /// Create a signed VoucherAuthorization for a tab settlement (quoteID is nil).
+    /// Cumulative = existing authorized amount + tabCredits owed.
+    func createTabSettlementVoucher(requestID: String, tabCredits: UInt64, channelId: Data) async throws -> VoucherAuthorization {
+        guard let wp = walletProvider, let ch = channel else {
+            throw CryptoError.verificationFailed
+        }
+        // Use max(authorizedAmount, spendState.cumulativeSpend) as baseline.
+        // spendState.cumulativeSpend is persisted across restarts; ch.authorizedAmount is derived
+        // from latestVoucher which is NOT persisted. After a restart, authorizedAmount resets to 0
+        // but spendState still reflects total spend — without this, the first post-restart voucher
+        // produces a cumulative below the provider's settledAmount, making unsettledAmount = 0.
+        let base = max(ch.authorizedAmount, UInt64(max(0, spendState.cumulativeSpend)))
+        let newCumulative = base + tabCredits
+        guard newCumulative <= ch.deposit else {
+            throw ChannelError.exceedsDeposit
+        }
+        let voucher = Voucher(channelId: ch.channelId, cumulativeAmount: newCumulative)
+        let signed = try await wp.signVoucher(voucher, config: tempoConfig)
+        // Update local channel so the next settlement computes a strictly higher cumulative amount.
+        // authorizedAmount is derived from latestVoucher.cumulativeAmount — without this update
+        // every settlement would produce the same (non-monotonic) amount and be rejected.
+        channel?.latestVoucher = signed
+        return VoucherAuthorization(requestID: requestID, quoteID: nil, signedVoucher: signed)
+    }
+
+    /// Record a tab settlement: advance spend state and reset tab counter.
+    func recordTabSettlement(tabCredits: UInt64) {
+        spendState.advance(creditsCharged: Int(min(tabCredits, UInt64(Int.max))))
+        remainingCredits = max(0, creditCeiling - spendState.cumulativeSpend)
+        currentTabTokens = 0
+        persist()
     }
 
     /// The credit ceiling — uses channel deposit if available (reflects top-ups), otherwise sessionGrant.maxCredits.

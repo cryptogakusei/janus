@@ -1,5 +1,111 @@
 # Janus Worklog
 
+## 2026-04-15
+
+### Feature #13d: Tab-Based Postpaid Payment Model
+
+Replaces the quote→voucher→response flow with a postpaid tab model. Provider serves inference immediately, accumulates a per-client token tab, and requests settlement when the tab crosses a threshold. The client auto-signs the voucher reactively. Designed for rural/village social-trust networks where cryptographic upfront commitment is unnecessary overhead.
+
+#### Protocol changes
+
+- **`TabUpdate`** (new message, `Provider → Client`): embedded in each `InferenceResponse` — carries `tokensUsed`, `cumulativeTabTokens`, `tabThreshold`.
+- **`TabSettlementRequest`** (new message type, `Provider → Client`): sent when tab ≥ threshold, blocks further requests until client settles.
+- **`VoucherAuthorization.quoteID`**: changed from `String` to `String?`. `quoteID == nil` is the discriminant for tab settlements; non-nil routes to legacy prepaid path.
+- **`ServiceAnnounce`**: added `tokenRate` (credits / 1000 tokens), `tabThreshold` (tokens before settlement), `maxOutputTokens`, `paymentModel` ("tab" or "prepaid"). `pricing` made optional. All new fields use `decodeIfPresent` with sensible defaults — old prepaid providers decode transparently.
+- **`InferenceResponse`**: added optional `tabUpdate: TabUpdate?` (default nil). Existing call sites compile unchanged.
+- **`ErrorResponse`**: added `.tabSettlementRequired` case.
+- **`PersistedProviderState`**: added `tabByChannelId: [String: UInt64]?` and `pendingTabSettlementByChannelId: [String: String]?` — persisted across restarts for crash recovery and debt anti-escape.
+
+#### Provider changes (`ProviderEngine`)
+
+- Added `tabByChannelId: [String: UInt64]` and `pendingTabSettlementByChannelId: [String: String]` in-memory state.
+- `handlePromptRequest()`: removed entire quote-generation block. Now runs inference directly, increments tab, sends `InferenceResponse` with embedded `TabUpdate`, and triggers `TabSettlementRequest` if threshold crossed.
+- Added `handleTabSettlementVoucher(_ auth:)`: validates replay prevention (`auth.requestID == pendingTabSettlementByChannelId[channelIdHex]`), runs `verifyTabSettlement()`, accepts voucher, resets tab to 0.
+- `handleMessage()` dispatcher: `auth.quoteID == nil` routes to tab settlement; non-nil silently dropped (provider is tab-only now).
+- `persistState()` / `restoreFromPersisted()`: includes tab dictionaries (nil when empty to save space).
+- `ProviderAdvertiserTransport.updateServiceAnnounce()`: extended with `tokenRate`, `tabThreshold`, `maxOutputTokens`, `paymentModel` params; backward-compat default 2-param overload provided.
+- Removed dead code: `requestCache` dict, `cacheRequest()`, `cachedTaskType()`, `cachedPrompt()`, `cleanupExpiredQuotes()`, `pendingQuotes`.
+
+#### `MLXRunner` changes
+
+- `generate()` now returns `InferenceResult` (struct with `outputText: String` + `outputTokenCount: Int`) instead of raw `String`.
+- Token count computed post-inference via `container.perform { ctx in ctx.tokenizer.encode(...).count }` — exact count for ceiling-division billing.
+
+#### Client changes (`ClientEngine`, `SessionManager`)
+
+- **`RequestState`**: removed `.waitingForQuote`, added `.awaitingSettlement`.
+- `handleMessage()`: removed `.quoteResponse` handler, added `.tabSettlementRequest` → `handleTabSettlementRequest()`.
+- `handleTabSettlementRequest()`: sets `.awaitingSettlement`, auto-creates and sends `VoucherAuthorization` (quoteID nil) via `SessionManager.createTabSettlementVoucher()`, records settlement, resets to `.idle`.
+- `handleInferenceResponse()`: tab fraud check — verifies `creditsCharged == max(1, (tokensUsed * tokenRate + 999) / 1000)`.
+- `handleError()`: silently drops `.tabSettlementRequired` (provider sends both `TabSettlementRequest` message and the error simultaneously; the message drives state).
+- `canAffordRequest`: returns false when `.awaitingSettlement`; no longer references `PricingTier.small.credits`.
+- `SessionManager`: added `currentTabTokens`, `tabThreshold`, `tokenRate` `@Published` properties; `applyTabUpdate()`, `createTabSettlementVoucher()`, `recordTabSettlement()`.
+
+#### UI changes
+
+- `PromptView`: tab progress bar ("Tab: X / Y tokens"), settlement pending banner, `.awaitingSettlement` button state.
+- `DiscoveryView` + `DualModeView`: conditional pricing display — tab providers show rate/threshold/maxOutput; prepaid providers show old small/medium/large badge.
+
+#### Removals
+
+- `PricingTier.swift` — deleted (replaced by per-token `tokenRate`).
+- `PricingTierTests.swift` — deleted.
+- `QuoteResponse.swift` — deleted (no quote in tab flow).
+
+#### Verification
+
+Key implementation invariants:
+1. **Ceiling division**: `(tokens * rate + 999) / 1000`, min 1 — prevents 0-credit monotonicity break.
+2. **Tab block = derived check**: `tabByChannelId[id] >= tabThresholdTokens` — no separate Set, crash-safe.
+3. **Replay prevention**: `auth.requestID == pendingTabSettlementByChannelId[channelIdHex]` before accepting.
+4. **Persistence**: both tab dicts in `PersistedProviderState` — client reconnect can't escape unpaid debt.
+5. **Backward compat**: all `ServiceAnnounce` new fields `decodeIfPresent`; old providers default to `paymentModel="prepaid"`.
+
+#### Files Changed
+
+| File | Change |
+|------|--------|
+| `Sources/JanusShared/Protocol/TabUpdate.swift` | NEW |
+| `Sources/JanusShared/Protocol/TabSettlementRequest.swift` | NEW |
+| `Tests/JanusSharedTests/TabPaymentFlowTests.swift` | NEW (22 tests: serialization, verifyTabSettlement, ceiling division, backward compat) |
+| `Sources/JanusShared/Protocol/QuoteResponse.swift` | DELETED |
+| `Sources/JanusShared/Models/PricingTier.swift` | DELETED |
+| `Tests/JanusSharedTests/PricingTierTests.swift` | DELETED |
+| `Sources/JanusShared/Protocol/MessageEnvelope.swift` | Add `.tabSettlementRequest` |
+| `Sources/JanusShared/Protocol/InferenceResponse.swift` | Add `tabUpdate: TabUpdate?` |
+| `Sources/JanusShared/Protocol/VoucherAuthorization.swift` | `quoteID: String?`, custom decoder |
+| `Sources/JanusShared/Protocol/ServiceAnnounce.swift` | Add 4 new fields; `pricing` optional |
+| `Sources/JanusShared/Protocol/ErrorResponse.swift` | Add `.tabSettlementRequired` |
+| `Sources/JanusShared/Persistence/SessionStore.swift` | Add tab fields to `PersistedProviderState` |
+| `Sources/JanusShared/Verification/VoucherVerifier.swift` | Add `verifyTabSettlement()` |
+| `Sources/JanusProvider/Inference/MLXRunner.swift` | Return `InferenceResult` (pkg file) |
+| `JanusApp/JanusProvider/MLXRunner.swift` | Return `InferenceResult` (app file) |
+| `JanusApp/JanusProvider/ProviderEngine.swift` | Full pipeline rewrite; remove quote/cache dead code |
+| `JanusApp/JanusProvider/ProviderAdvertiserTransport.swift` | Updated protocol + backward-compat default |
+| `JanusApp/JanusProvider/BonjourAdvertiser.swift` | Updated `updateServiceAnnounce` |
+| `JanusApp/JanusProvider/MPCAdvertiser.swift` | Updated `updateServiceAnnounce` |
+| `JanusApp/JanusProvider/CompositeAdvertiser.swift` | Updated `updateServiceAnnounce` |
+| `JanusApp/JanusClient/ClientEngine.swift` | Remove quote; add tab settlement handler |
+| `JanusApp/JanusClient/SessionManager.swift` | Tab state + methods |
+| `JanusApp/JanusClient/PromptView.swift` | Tab progress bar, settlement banner |
+| `JanusApp/JanusClient/DiscoveryView.swift` | Conditional pricing display |
+| `JanusApp/JanusClient/DualModeView.swift` | Conditional pricing display |
+| `Tests/JanusSharedTests/ProtocolTests.swift` | Updated `testServiceAnnounceRoundTrip()` + new old-JSON defaults test |
+| `Tests/JanusSharedTests/VoucherFlowTests.swift` | `makeAuth()` quoteID → `String?` |
+| `JanusApp/JanusClientTests/ClientEngineTests.swift` | Remove quote tests; add tab settlement tests |
+| `JanusApp/JanusClientTests/DualModeTests.swift` | Updated local transport test to use TabSettlementRequest |
+
+Net: ~424 lines deleted (PricingTier 104 + QuoteResponse + quote blocks), ~600 lines added (new protocol types + tab logic + tests). Net simplification of payment flow despite adding persistence.
+
+#### Test Results
+
+- `xcodebuild test -scheme Janus-Package` → **206 tests, 0 failures**
+- `xcodebuild build -scheme JanusProvider` → **BUILD SUCCEEDED**
+- `xcodebuild build -scheme JanusClient` → **BUILD SUCCEEDED**
+- `xcodebuild test -scheme JanusClientTests` → **63 tests, 0 failures**
+
+---
+
 ## 2026-03-23
 
 ### M1: Local inference on Mac (standalone)
@@ -1584,9 +1690,15 @@ Full prioritized list of all remaining features across relay, transport, payment
 | 12a | ~~Fix first-query failure after provider switch~~ | Small | — | **DONE.** Generation counter in `createSession()` discards stale async results. `canSubmit` gated on `sessionReady` (not just `connectedProvider`). Defense-in-depth guard in `submitRequest()`. |
 | 13 | ~~Periodic & threshold-based settlement~~ | Small | — | **DONE.** Provider settles on a configurable timer (default 5 min) and/or when aggregate unsettled credits cross a threshold (default 50). Provider UI with segmented pickers. Persisted settings survive restart. Bug fix: `settledAmount` desync after provider restart caused inflated `unsettledAmount` and premature threshold triggers — fixed by initializing `settledAmount` from on-chain state during channel verification. Additional hardening: startup race fix (fund→retry→timer ordering), settlement queuing (no dropped disconnect requests), 24h TTL on stale channels, zombie channel prevention (re-check on-chain after tx revert), computed `activeSessionCount`. |
 | 13b | Real token economics / USD pricing | Product decision | — | Dynamic pricing by model load, token count, or USD denomination. Currently fixed 3/5/8 credit tiers. |
-| 13c | Remove Privy SDK | Small | — | Privy is currently dead weight: can't send raw txs to Tempo chain (custom chain limitation), MPC voucher signing requires internet (conflicts with offline-first design), local EthKeyPair already handles all signing and on-chain ops. Privy reduced to `privyIdentityAddress` display only. Removal scope: delete `PrivyAuthManager`, `PrivyWalletProvider`, `LoginView` (or replace with a simple "tap to start" entry), remove Privy SPM dependency. Replace with direct entry to `DiscoveryView`. No protocol or payment changes needed. |
+| 13d | ~~Tab-based postpaid payment model~~ | Large | — | **DONE.** Replace the current quote→voucher→response flow with a postpaid tab model. Provider serves inference and accumulates a running token tab per client (input + output tokens counted after inference, so charging is exact). Once the tab crosses a configurable threshold (e.g. 100 tokens worth of credits), provider blocks new requests until client sends a voucher for the exact accumulated amount. Tab resets and client can continue. Provider persists tab per client (by channel ID) so a disconnecting client cannot escape the debt by reconnecting — the tab resumes from where it left off. **Why this fits the use case:** designed for rural/village networks where social reputation enforces payment and cryptographic upfront commitment is unnecessary overhead. Threshold is kept small so unpaid exposure per client is always bounded. **Tradeoffs:** (1) client trusts provider's token count post-inference — no cryptographic price commitment before serving; (2) provider attack of inflating token count is possible but reputation-destroying; (3) provider withholding response after incrementing tab is a losing strategy (loses reputation, loses payment). **Protocol changes required:** (a) remove `QuoteResponse` message type — no upfront quote needed; (b) remove `VoucherAuthorization` before inference — voucher is now sent reactively when threshold crossed; (c) add `TabUpdate` message: provider → client after each response with `{tokensUsed, cumulativeTabTokens, tabThreshold}`; (d) add `TabSettlementRequest` message: provider → client when threshold crossed, blocking further requests; (e) `ServiceAnnounce` changes: replace small/medium/large pricing with `tokenRate` (credits per 1000 tokens) and `tabThreshold` (tokens before settlement required); (f) provider persistence: add running tab per channel ID to `PersistedProviderState`; (g) client UI: show running tab in balance bar alongside remaining credits. **What stays the same:** escrow channel, voucher format, on-chain settlement — only the trigger and timing of voucher signing changes. |
+| 13e | Provider-configurable pricing (tokenRate + tabThreshold) | Small | #13d | **Immediate follow-up to #13d.** Feature #13d hardcodes `tokenRate = 10 credits/1000 tokens` and `tabThresholdTokens = 500` as constants in `ProviderEngine`. This feature makes them operator-configurable so each provider can set their own price and settlement cadence — the same way current AI API providers advertise dollars per million tokens. **What changes:** (1) Add a `ProviderPricingConfig` struct (or extend `PersistedProviderState`) with `tokenRate: UInt64` and `tabThreshold: UInt64` fields, persisted to disk. (2) Add a provider settings UI section ("Pricing") with two numeric fields: "Rate (credits / 1000 tokens)" and "Settle every N tokens". (3) `ProviderEngine` reads these from config rather than hardcoded `let` constants — `updateServiceAnnounce()` picks up the new values and rebroadcasts immediately when changed. (4) Reasonable defaults: `tokenRate = 10`, `tabThreshold = 500`. **Why this matters:** different providers run different models with different compute costs; a provider running a 3B model on an old phone should charge less than one running a 70B model on a Mac Studio. The market can only work if providers can set their own prices. |
+| 13f | USD/million-token display for provider pricing | Small | #13e | **Immediate follow-up to #13e.** The internal `tokenRate` is in credits per 1000 tokens (an abstract unit). This feature surfaces a human-readable price alongside credits: "X credits / 1000 tokens  ≈  $Y / 1M tokens" — the standard denomination used by OpenAI, Anthropic, and every current inference API provider. **What changes:** (1) Add a `CreditConversion` utility: given the on-chain credit-to-USD exchange rate (read from `TempoConfig` or a hardcoded testnet rate), compute `dollarsPerMillionTokens = (tokenRate / 1000) * creditsToUSD * 1_000_000`. (2) `DiscoveryView` provider cards show both: "10 credits/1K tokens  ·  ~$0.50/1M tokens". (3) Provider settings UI shows the computed USD equivalent as a live preview while the operator types their rate — so they can reason in familiar terms before saving. (4) No on-chain changes; purely a display layer. **Why this matters:** village operators need to set prices that make economic sense relative to the outside world. Showing only "credits" is opaque; showing an equivalent dollar rate lets them benchmark against cloud providers and set fair prices. |
+| 13c | ~~Remove Privy SDK~~ | Small | — | **DONE.** Deleted `PrivyAuthManager`, `PrivyWalletProvider`, `LoginView`. Removed Privy SPM dependency and all 14 pbxproj entries. App opens directly to `DiscoveryView` — no login, no internet at startup. All signing and on-chain ops already used `LocalWalletProvider` since #12a. Net: −571 lines. |
 | 14 | Mainnet deployment | Small | — | TempoConfig.mainnet + deploy TempoStreamChannel contract to mainnet. No code changes needed. |
 | 14b | Cap off-chain voucher exposure | Small | — | Provider currently serves inference optimistically before the client's channel is confirmed on-chain (`VoucherVerifier` returns `.acceptedOffChainOnly`). Risk: client never opens channel, provider serves for free. Fix: serve first request optimistically, require on-chain confirmation before subsequent requests. Bounded risk (one cheap inference per session). |
+| 14c | Multi-turn chat | Medium | — | Pass conversation history as context with each new prompt so the model remembers prior turns. Requires: (1) UI rethink — replace task type picker with a free-form chat interface, (2) per-turn pricing — longer prompts cost more credits, need per-token pricing or a larger fixed tier for context-heavy turns, (3) history truncation strategy to stay within model context window. Payment protocol charges per completed request so the quote/response/receipt flow is unchanged — just the prompt size grows. |
+| 14d | Streaming responses | Medium | #14c | Show tokens appearing word-by-word as the model generates instead of waiting for the full response. Requires: (1) MLXRunner to emit partial tokens via AsyncStream, (2) chunked MPC message protocol (stream start / chunk / stream end message types), (3) quote upfront based on prompt size (can't know exact cost mid-generation), settle after stream ends. Natural companion to multi-turn chat — both change the inference UX fundamentally. |
+| 14e | TestFlight distribution | Small | #13c | Publish JanusClient to TestFlight so external users can install without Xcode. Prerequisites: App Store Connect setup, bundle ID registered, provisioning profile for distribution, privacy policy (minimal — no data collected server-side). Post-#13c the onboarding is zero-friction: install → open → see providers → connect. No login, no account, no seed phrase. |
 
 #### Long-term: Mesh network vision (#15–19)
 
@@ -1629,6 +1741,12 @@ Hybrid mesh:
 
 **Key insight:** The Janus protocol is transport-agnostic — MessageEnvelope is just JSON bytes. The `ProviderTransport` protocol abstraction enables plugging in new transports (BLE, ESP-NOW, TCP) without changing business logic, UI, or payment flows. Each transport has a sweet spot: TCP for same-LAN reliability, MPC/AWDL for zero-infrastructure single-hop, BLE for reliable multi-hop and hardware bridge, ESP-NOW for long-range ESP32 mesh.
 
+#### Network economics: Two-tier relay model (#24) 🔴 HIGH PRIORITY
+
+| # | Feature | Effort | Dependencies | Details |
+|---|---------|--------|-------------|---------|
+| 24 | Commons + private relay two-tier network | Medium | #19 | **Two-tier relay architecture:** Tier 1 = **commons relays** run by village admin, NGO, or public service operator — no toll fee (`relayFee: 0`), funded externally (budget, grant, cross-subsidy). Tier 2 = **private relays** run by individual operators who set their own forwarding fee (`relayFee: X credits`). Like village roads: the commons backbone is always available and free; private "toll roads" serve niche routes (better latency, coverage gaps, urban areas underserved by commons). **Protocol changes:** (a) Add `relayFee: UInt64` to `ServiceAnnounce` — `0` means commons/free; (b) Add `isCommons: Bool` as explicit declaration (fee=0 is implied but `isCommons` signals intent to clients); (c) Client routing preference: prefer lowest-cost path first, always has a free option if commons backbone is reachable; (d) Discovery UI shows fee badge on relay cards ("FREE" vs "2 credits/req"). **Relay fee payment:** when client routes via a private relay, a slice of each voucher is earmarked for the relay (or a separate micro-channel is opened — design TBD in #19). Commons relays take no slice. **Sustainability for commons:** operator funds hardware and bandwidth externally — same model as village road maintenance. Private relays are self-sustaining via fees. **Network effect:** zero barrier to entry on the commons path (no credits needed just to route a request) ensures adoption in low-income / rural contexts. Private relays fill in where commons don't reach. **Key constraint:** commons relay operators need a non-fee sustainability model — note in admin docs that commons operators need an external budget (ISP subsidy, NGO grant, public utility allocation). |
+
 #### Dependency graph
 
 ```
@@ -1642,15 +1760,18 @@ Hybrid mesh:
 #18 (BLE transport) ← #21 (RPi) BLE as alternative to TCP
 #18 (BLE transport) ← #22 (cross-transport relay)
 #20 (ESP32 mesh) ← #23 (ESP-NOW transport)
+#19 (relay incentives) ← #24 (two-tier relay model) commons/private distinction refines fee model
 ```
 
 #### Summary
 
-- **23 items total**: 7 small (Phase 2), 6 small-medium (polish), 10 large (long-term)
+- **26 items total**: 7 small (Phase 2), 8 small-medium (polish), 10 large (long-term), 1 hardware vision
 - **Near-term** (#1–7): finish relay robustness
 - **Medium-term** (#8–14): transport reliability + payment polish
+- **Payment model** (~~#13d~~ ✓ → #13e 🔴 → #13f): tab-based postpaid DONE, then provider-configurable pricing, then USD display
 - **Long-term** (#15–19): mesh network with encryption, multi-hop, and incentives
 - **Hardware vision** (#20–23): ESP32 mesh backbone, RPi edge providers, cross-transport relay
+- **Network economics** (#24 🔴): two-tier commons/private relay model — HIGH PRIORITY
 
 ---
 
@@ -2443,3 +2564,53 @@ Three-part fix deployed 2026-04-14:
 #### Verification
 
 Both iPhones (Soubhik's iPhone + Madhuri's iPhone) + Mac provider deployed. Dual mode (iPhone as relay) verified working. No spurious revert error on reconnect.
+
+---
+
+## 2026-04-14
+
+### Feature #13c: Remove Privy SDK (commit bc94977)
+
+Removes all Privy SDK dependencies from the client app. The login screen and authentication gate are gone — the app opens directly to provider discovery.
+
+#### Why
+
+Privy was used for two things: (1) Apple/email login to gate the UI, and (2) an embedded Ethereum wallet. Feature #12a already replaced the Privy wallet with `LocalWalletProvider` (EthKeyPair) for all signing and on-chain ops. Privy's address was only being captured as `privyIdentityAddress` for display/logging — never used. The login gate had no security value for a local peer-to-peer network. Removing Privy eliminates an internet dependency at app launch, reduces binary size, and removes an SDK from the trust boundary.
+
+#### What was removed
+
+- **`PrivyAuthManager.swift`** — deleted. Auth manager, Apple/email OTP login, wallet setup.
+- **`PrivyWalletProvider.swift`** — deleted. Privy-backed `WalletProvider` (never called for signing since #12a).
+- **`LoginView.swift`** — deleted. Apple/email login screen.
+- **`auth.isAuthenticated` gate** in `JanusClientApp` — removed. App now starts directly in `DiscoveryView`.
+- **`walletProvider` parameter** on `SessionManager.create()`/`restore()` — removed (was identity-only since #12a).
+- **`privyIdentityAddress: EthAddress?`** on `SessionManager` — removed.
+- **`ClientEngine.walletProvider`** property and injection blocks in `DiscoveryView`/`DualModeView` — removed.
+- **`walletBadge`** (showed Privy wallet address + Logout) from both discovery views — removed.
+- **Privy SPM reference** (`privy-ios`) and all 14 pbxproj artifact entries — removed.
+
+#### Files Changed
+
+| File | Change |
+|------|--------|
+| `JanusApp/JanusClient/PrivyAuthManager.swift` | Deleted |
+| `JanusApp/JanusClient/PrivyWalletProvider.swift` | Deleted |
+| `JanusApp/JanusClient/LoginView.swift` | Deleted |
+| `JanusApp/JanusClient/JanusClientApp.swift` | Remove `auth`, login gate, `LoginView` fallback |
+| `JanusApp/JanusClient/SessionManager.swift` | Remove `walletProvider` param, `privyIdentityAddress`, Privy comments |
+| `JanusApp/JanusClient/ClientEngine.swift` | Remove `walletProvider` property and its call sites |
+| `JanusApp/JanusClient/DiscoveryView.swift` | Remove `auth` param, `walletBadge`, injection blocks |
+| `JanusApp/JanusClient/DualModeView.swift` | Same as DiscoveryView |
+| `JanusApp/JanusApp.xcodeproj/project.pbxproj` | Remove all 14 Privy pbxproj entries |
+| `Sources/JanusShared/Tempo/WalletProvider.swift` | Remove `PrivyWalletProvider` from doc comment |
+| `JanusApp/JanusClientTests/OfflineVoucherTests.swift` | Drop Privy params; rename corrupted-key test to reflect Keychain fallback behavior |
+
+Net: 611 lines deleted, 40 added.
+
+#### Tests
+
+63/63 Xcode tests passing. Updated `testRestoreInit_corruptedEthKey` — now verifies that a corrupted JSON key falls back to the Keychain key (identity continuity), which is the correct behavior since the Keychain feature was added.
+
+#### Verification
+
+All three targets (Mac provider + Soubhik's iPhone + Madhuri's iPhone) deployed. End-to-end: discovery, channel open, inference, top-up all confirmed working with no login screen.

@@ -44,7 +44,11 @@ final class ProtocolTests: XCTestCase {
             pricing: Pricing(small: 3, medium: 5, large: 8),
             available: true,
             queueDepth: 2,
-            providerPubkey: "abc123base64"
+            providerPubkey: "abc123base64",
+            tokenRate: 20,
+            tabThreshold: 300,
+            maxOutputTokens: 2048,
+            paymentModel: "tab"
         )
 
         let data = try JSONEncoder.janus.encode(original)
@@ -53,10 +57,39 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(decoded.providerID, "p1")
         XCTAssertEqual(decoded.providerName, "TestMac")
         XCTAssertEqual(decoded.supportedTasks, [.translate, .summarize])
-        XCTAssertEqual(decoded.pricing.small, 3)
-        XCTAssertEqual(decoded.pricing.large, 8)
+        XCTAssertEqual(decoded.pricing?.small, 3)
+        XCTAssertEqual(decoded.pricing?.large, 8)
         XCTAssertEqual(decoded.queueDepth, 2)
         XCTAssertEqual(decoded.providerPubkey, "abc123base64")
+        XCTAssertEqual(decoded.tokenRate, 20)
+        XCTAssertEqual(decoded.tabThreshold, 300)
+        XCTAssertEqual(decoded.maxOutputTokens, 2048)
+        XCTAssertEqual(decoded.paymentModel, "tab")
+    }
+
+    func testServiceAnnounce_oldJSON_decodesWithDefaults() throws {
+        // Old providers don't send tokenRate/tabThreshold/maxOutputTokens/paymentModel.
+        // Client must decode them as sensible defaults.
+        let oldJSON = """
+        {
+            "providerID": "old-prov",
+            "providerName": "OldMac",
+            "modelTier": "small-text-v1",
+            "supportedTasks": ["translate"],
+            "pricing": {"small": 2, "medium": 4, "large": 7},
+            "available": true,
+            "queueDepth": 0,
+            "providerPubkey": ""
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder.janus.decode(ServiceAnnounce.self, from: oldJSON)
+
+        XCTAssertEqual(decoded.tokenRate, 10, "Old providers must default to tokenRate=10")
+        XCTAssertEqual(decoded.tabThreshold, 500, "Old providers must default to tabThreshold=500")
+        XCTAssertEqual(decoded.maxOutputTokens, 1024, "Old providers must default to maxOutputTokens=1024")
+        XCTAssertEqual(decoded.paymentModel, "prepaid", "Old providers must default to paymentModel=prepaid")
+        XCTAssertEqual(decoded.pricing?.small, 2)
     }
 
     // MARK: - PromptRequest

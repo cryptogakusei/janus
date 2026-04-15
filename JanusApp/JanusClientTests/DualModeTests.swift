@@ -113,24 +113,22 @@ final class DualModeTests: XCTestCase {
         let transport = relay.enableLocalClient()
         let engine = ClientEngine(transport: transport)
 
-        // Set up engine state to accept a quote
-        engine.pendingRequestID = "req-1"
-        engine.requestState = .waitingForQuote
-
-        // Simulate provider sending a quote through the local transport.
+        // Simulate provider sending a tab settlement request through the local transport.
         // Call handleMessage directly (onMessageReceived dispatches via Task,
         // which won't resolve synchronously in tests).
-        let quote = QuoteResponse(
-            requestID: "req-1", priceCredits: 5,
-            priceTier: "medium", expiresAt: Date().addingTimeInterval(60)
-        )
+        engine.pendingRequestID = "req-1"
+        engine.requestState = .waitingForResponse
+
+        let channelId = Data(repeating: 0, count: 32)
+        let req = TabSettlementRequest(requestID: "settle-1", tabCredits: 10, channelId: channelId)
         let envelope = try MessageEnvelope.wrap(
-            type: .quoteResponse, senderID: "prov-1", payload: quote
+            type: .tabSettlementRequest, senderID: "prov-1", payload: req
         )
         engine.handleMessage(envelope)
 
-        XCTAssertNotNil(engine.currentQuote)
-        XCTAssertEqual(engine.currentQuote?.priceCredits, 5)
+        XCTAssertEqual(engine.requestState, .awaitingSettlement,
+                       "TabSettlementRequest must transition to awaitingSettlement")
+        XCTAssertEqual(engine.pendingSettlement?.tabCredits, 10)
     }
 
     // MARK: - enableLocalClient mirrors existing provider state

@@ -41,7 +41,7 @@ final class VoucherFlowTests: XCTestCase {
                       priceTier: "medium", expiresAt: Date().addingTimeInterval(60))
     }
 
-    private func makeAuth(requestID: String, quoteID: String,
+    private func makeAuth(requestID: String, quoteID: String? = "test-quote-id",
                           cumulativeAmount: UInt64) throws -> VoucherAuthorization {
         let voucher = Voucher(channelId: channel.channelId, cumulativeAmount: cumulativeAmount)
         let signed = try voucher.sign(with: clientKP, config: config)

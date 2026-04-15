@@ -27,11 +27,6 @@ final class ClientEngineTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeQuote(requestID: String, priceCredits: Int = 5) -> QuoteResponse {
-        QuoteResponse(requestID: requestID, priceCredits: priceCredits,
-                      priceTier: "medium", expiresAt: Date().addingTimeInterval(60))
-    }
-
     private func makeReceipt(sessionID: String, requestID: String, providerID: String,
                              creditsCharged: Int, cumulativeSpend: Int) -> Receipt {
         let signer = JanusSigner(keyPair: providerJanusKP)
@@ -71,45 +66,28 @@ final class ClientEngineTests: XCTestCase {
         )
     }
 
-    // MARK: - QuoteResponse handling
-
-    func testHandleQuoteResponse_setsCurrentQuote() throws {
-        let requestID = "req-1"
-        engine.pendingRequestID = requestID
-        engine.requestState = .waitingForQuote
-
-        let quote = makeQuote(requestID: requestID, priceCredits: 3)
-        let envelope = try MessageEnvelope.wrap(type: .quoteResponse, senderID: "prov-1", payload: quote)
-        engine.handleMessage(envelope)
-
-        // Quote should be set even though sessionManager is nil (voucher auth will fail gracefully)
-        XCTAssertNotNil(engine.currentQuote)
-        XCTAssertEqual(engine.currentQuote?.requestID, requestID)
-        XCTAssertEqual(engine.currentQuote?.priceCredits, 3)
-    }
-
-    func testHandleQuoteResponse_ignoresWrongRequestID() throws {
-        engine.pendingRequestID = "req-1"
-        engine.requestState = .waitingForQuote
-
-        let quote = makeQuote(requestID: "wrong-id", priceCredits: 5)
-        let envelope = try MessageEnvelope.wrap(type: .quoteResponse, senderID: "prov-1", payload: quote)
-        engine.handleMessage(envelope)
-
-        XCTAssertNil(engine.currentQuote, "Quote with non-matching requestID should be ignored")
-        XCTAssertEqual(engine.requestState, .waitingForQuote, "State should remain unchanged")
-    }
-
     // MARK: - InferenceResponse handling
 
     func testHandleInferenceResponse_rejectsMismatchedCharge() throws {
         let requestID = "req-1"
         engine.pendingRequestID = requestID
         engine.requestState = .waitingForResponse
-        engine.currentQuote = makeQuote(requestID: requestID, priceCredits: 5)
 
-        // Response charges 8 but quote said 5
-        let response = makeInferenceResponse(requestID: requestID, creditsCharged: 8, cumulativeSpend: 8)
+        // Set provider as tab model: tokenRate=10 (10 credits per 1000 tokens)
+        engine.connectedProvider = ServiceAnnounce(
+            providerID: "prov-1", providerName: "Test",
+            providerPubkey: "", providerEthAddress: "",
+            tokenRate: 10, tabThreshold: 500, maxOutputTokens: 1024, paymentModel: "tab"
+        )
+
+        // 100 tokens → expected = max(1, (100*10+999)/1000) = 1 credit
+        // Response charges 5 → mismatch
+        let tabUpdate = TabUpdate(tokensUsed: 100, cumulativeTabTokens: 100, tabThreshold: 500)
+        let receipt = makeReceipt(sessionID: "sess-1", requestID: requestID, providerID: "prov-1",
+                                  creditsCharged: 5, cumulativeSpend: 5)
+        let response = InferenceResponse(requestID: requestID, outputText: "Test",
+                                         creditsCharged: 5, cumulativeSpend: 5,
+                                         receipt: receipt, tabUpdate: tabUpdate)
         let envelope = try MessageEnvelope.wrap(type: .inferenceResponse, senderID: "prov-1", payload: response)
         engine.handleMessage(envelope)
 
@@ -123,7 +101,6 @@ final class ClientEngineTests: XCTestCase {
         let requestID = "req-1"
         engine.pendingRequestID = requestID
         engine.requestState = .waitingForResponse
-        engine.currentQuote = makeQuote(requestID: requestID, priceCredits: 3)
 
         // Set a provider pubkey so signature verification is triggered
         let realProvider = JanusKeyPair()
@@ -160,7 +137,7 @@ final class ClientEngineTests: XCTestCase {
 
     func testHandleError_setsErrorState() throws {
         engine.pendingRequestID = "req-1"
-        engine.requestState = .waitingForQuote
+        engine.requestState = .waitingForResponse
 
         let error = ErrorResponse(requestID: "req-1", errorCode: .providerBusy, errorMessage: "Model not ready")
         let envelope = try MessageEnvelope.wrap(type: .errorResponse, senderID: "prov-1", payload: error)
@@ -180,7 +157,7 @@ final class ClientEngineTests: XCTestCase {
 
         for code in codes {
             engine.pendingRequestID = "req-\(code.rawValue)"
-            engine.requestState = .waitingForQuote
+            engine.requestState = .waitingForResponse
 
             let error = ErrorResponse(requestID: "req-\(code.rawValue)", errorCode: code, errorMessage: "Test")
             let envelope = try MessageEnvelope.wrap(type: .errorResponse, senderID: "prov-1", payload: error)
@@ -192,11 +169,44 @@ final class ClientEngineTests: XCTestCase {
         }
     }
 
+    func testHandleError_tabSettlementRequired_isSilentlyDropped() throws {
+        // When provider sends tabSettlementRequired, the paired TabSettlementRequest message
+        // is what drives state. This error code must not override awaitingSettlement state.
+        engine.pendingRequestID = "req-1"
+        engine.requestState = .awaitingSettlement
+
+        let error = ErrorResponse(requestID: "req-1", errorCode: .tabSettlementRequired, errorMessage: "Settle tab")
+        let envelope = try MessageEnvelope.wrap(type: .errorResponse, senderID: "prov-1", payload: error)
+        engine.handleMessage(envelope)
+
+        XCTAssertEqual(engine.requestState, .awaitingSettlement, "tabSettlementRequired must not override awaitingSettlement")
+        XCTAssertNil(engine.errorMessage, "tabSettlementRequired must not set errorMessage")
+    }
+
+    // MARK: - Tab settlement request handling
+
+    func testHandleTabSettlementRequest_setsAwaitingSettlementState() throws {
+        engine.requestState = .waitingForResponse
+        engine.pendingRequestID = "req-1"
+
+        let channelId = Data(repeating: 0xAB, count: 32)
+        let req = TabSettlementRequest(requestID: "settle-1", tabCredits: 15, channelId: channelId)
+        let envelope = try MessageEnvelope.wrap(type: .tabSettlementRequest, senderID: "prov-1", payload: req)
+        engine.handleMessage(envelope)
+
+        XCTAssertEqual(engine.requestState, .awaitingSettlement,
+                       "TabSettlementRequest must set awaitingSettlement state")
+        XCTAssertNotNil(engine.pendingSettlement, "pendingSettlement must be populated")
+        XCTAssertEqual(engine.pendingSettlement?.tabCredits, 15)
+        XCTAssertEqual(engine.pendingSettlement?.requestID, "settle-1")
+        // No sessionManager → auto-sign task returns early; state stays awaitingSettlement
+    }
+
     // MARK: - Relay disconnect (providerUnreachable)
 
     func testHandleError_providerUnreachable_setsErrorState() throws {
         engine.pendingRequestID = "req-1"
-        engine.requestState = .waitingForQuote
+        engine.requestState = .waitingForResponse
 
         // Relay sends error with requestID: nil (can't peek into opaque envelope)
         let error = ErrorResponse(

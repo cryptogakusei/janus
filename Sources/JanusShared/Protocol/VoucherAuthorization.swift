@@ -4,15 +4,27 @@ import Foundation
 ///
 /// The voucher's `cumulativeAmount` is monotonically increasing — each authorization
 /// supersedes the previous one, following the Tempo payment channel model.
+///
+/// **Tab model discriminant**: `quoteID == nil` means this is a tab settlement voucher
+/// (sent in response to `TabSettlementRequest`). `quoteID != nil` means legacy prepaid.
 public struct VoucherAuthorization: Codable, Sendable {
     public let requestID: String
-    public let quoteID: String
+    /// Non-nil for prepaid (quote-driven) flow; nil for tab settlement flow.
+    public let quoteID: String?
     public let signedVoucher: SignedVoucher
 
-    public init(requestID: String, quoteID: String, signedVoucher: SignedVoucher) {
+    public init(requestID: String, quoteID: String? = nil, signedVoucher: SignedVoucher) {
         self.requestID = requestID
         self.quoteID = quoteID
         self.signedVoucher = signedVoucher
+    }
+
+    /// Custom decoder: uses decodeIfPresent for quoteID so both nil (tab) and string (prepaid) decode correctly.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        requestID = try c.decode(String.self, forKey: .requestID)
+        quoteID = try c.decodeIfPresent(String.self, forKey: .quoteID)
+        signedVoucher = try c.decode(SignedVoucher.self, forKey: .signedVoucher)
     }
 
     /// Convenience: the cumulative amount from the voucher.

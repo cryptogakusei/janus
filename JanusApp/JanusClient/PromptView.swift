@@ -25,7 +25,9 @@ struct PromptView: View {
                     settlementSection
                 }
 
-                if engine.disconnectedDuringRequest {
+                if engine.requestState == .awaitingSettlement {
+                    settlementPendingBanner
+                } else if engine.disconnectedDuringRequest {
                     disconnectedBanner
                 } else if !engine.sessionReady {
                     reconnectingBanner
@@ -39,9 +41,7 @@ struct PromptView: View {
 
                 submitButton
 
-                if engine.requestState != .idle {
-                    statusSection
-                }
+                statusSection
 
                 if let result = engine.lastResult {
                     resultCard(result)
@@ -233,7 +233,7 @@ struct PromptView: View {
             submit()
         } label: {
             HStack {
-                if engine.requestState == .waitingForQuote || engine.requestState == .waitingForResponse {
+                if engine.requestState == .waitingForResponse || engine.requestState == .awaitingSettlement {
                     ProgressView()
                         .scaleEffect(0.8)
                 }
@@ -248,8 +248,8 @@ struct PromptView: View {
     private var buttonLabel: String {
         switch engine.requestState {
         case .idle, .complete, .error: return "Submit"
-        case .waitingForQuote: return "Getting quote..."
         case .waitingForResponse: return "Processing..."
+        case .awaitingSettlement: return "Settling tab..."
         }
     }
 
@@ -262,16 +262,37 @@ struct PromptView: View {
 
     private var statusSection: some View {
         HStack {
-            if let quote = engine.currentQuote {
-                Label("\(quote.priceCredits) credits (\(quote.priceTier))", systemImage: "tag")
+            if let session = engine.sessionManager, session.tabThreshold > 0 {
+                Label("Tab: \(session.currentTabTokens) / \(session.tabThreshold) tokens",
+                      systemImage: "chart.bar.fill")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(session.currentTabTokens >= session.tabThreshold * 9 / 10 ? .orange : .secondary)
             }
             Spacer()
             Text(engine.requestState.rawValue)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var settlementPendingBanner: some View {
+        HStack(spacing: 8) {
+            ProgressView().scaleEffect(0.7)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Settling tab payment...")
+                    .font(.subheadline.bold())
+                if let req = engine.pendingSettlement {
+                    Text("\(req.tabCredits) credits owed")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.orange.opacity(0.12))
+        .cornerRadius(10)
     }
 
     private func resultCard(_ result: InferenceResponse) -> some View {
