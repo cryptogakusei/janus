@@ -18,9 +18,11 @@ public struct ServiceAnnounce: Codable, Sendable {
     /// Ethereum address (hex, EIP-55 checksummed) for Tempo voucher sessions.
     public let providerEthAddress: String?
     /// Credits charged per 1000 tokens (tab model). Default 10.
-    public let tokenRate: UInt64
+    /// `var` so ClientEngine.handleServiceUpdate can update in place after a live pricing push.
+    public var tokenRate: UInt64
     /// Tokens before settlement is required (tab model). Default 500.
-    public let tabThreshold: UInt64
+    /// `var` so ClientEngine.handleServiceUpdate can update in place after a live pricing push.
+    public var tabThreshold: UInt64
     /// Maximum output tokens per request. Default 1024.
     public let maxOutputTokens: Int
     /// Payment model: "tab" (postpaid, per-token) or "prepaid" (quote-driven). Default "prepaid".

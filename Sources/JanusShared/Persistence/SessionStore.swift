@@ -143,6 +143,10 @@ public struct PersistedProviderState: Codable, Sendable {
     /// Persists for crash recovery (provider re-sends settlement request on reconnect)
     /// and replay prevention (voucher requestID must match this value).
     public var pendingTabSettlementByChannelId: [String: String]?
+    /// Operator-configured token rate (credits per 1000 tokens). Nil = use engine default (10).
+    public var tokenRate: UInt64?
+    /// Operator-configured tab threshold (tokens before settlement required). Nil = use engine default (500).
+    public var tabThresholdTokens: UInt64?
 
     public init(
         providerID: String,
@@ -158,7 +162,9 @@ public struct PersistedProviderState: Codable, Sendable {
         settlementThreshold: Int? = nil,
         settledChannelAmounts: [String: UInt64]? = nil,
         tabByChannelId: [String: UInt64]? = nil,
-        pendingTabSettlementByChannelId: [String: String]? = nil
+        pendingTabSettlementByChannelId: [String: String]? = nil,
+        tokenRate: UInt64? = nil,
+        tabThresholdTokens: UInt64? = nil
     ) {
         self.providerID = providerID
         self.privateKeyBase64 = privateKeyBase64
@@ -174,6 +180,8 @@ public struct PersistedProviderState: Codable, Sendable {
         self.settledChannelAmounts = settledChannelAmounts
         self.tabByChannelId = tabByChannelId
         self.pendingTabSettlementByChannelId = pendingTabSettlementByChannelId
+        self.tokenRate = tokenRate
+        self.tabThresholdTokens = tabThresholdTokens
     }
 
     /// Custom decoder: defaults new fields when missing (backwards compatibility).
@@ -193,6 +201,8 @@ public struct PersistedProviderState: Codable, Sendable {
         settledChannelAmounts = try container.decodeIfPresent([String: UInt64].self, forKey: .settledChannelAmounts)
         tabByChannelId = try container.decodeIfPresent([String: UInt64].self, forKey: .tabByChannelId)
         pendingTabSettlementByChannelId = try container.decodeIfPresent([String: String].self, forKey: .pendingTabSettlementByChannelId)
+        tokenRate = try container.decodeIfPresent(UInt64.self, forKey: .tokenRate)
+        tabThresholdTokens = try container.decodeIfPresent(UInt64.self, forKey: .tabThresholdTokens)
     }
 }
 

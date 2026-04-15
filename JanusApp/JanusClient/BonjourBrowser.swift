@@ -282,12 +282,22 @@ class BonjourBrowser: NSObject, ObservableObject, ProviderTransport {
             }
             directProviders[providerID] = announce
 
-            // Auto-select first provider
+            // Auto-select first provider, or refresh connectedProvider if it's the active one.
+            // The latter handles live pricing pushes: provider re-sends ServiceAnnounce after
+            // a rate/threshold change so the client's connectedProvider reflects the new values.
             if activeProviderID == nil {
                 activeProviderID = providerID
                 connectedProvider = announce
                 connectionState = .connected
                 connectionMode = .direct
+            } else if activeProviderID == providerID {
+                connectedProvider = announce
+                // This is a pricing re-send (not initial discovery) — synthesize a ServiceUpdate
+                // so ClientEngine.handleServiceUpdate fires and the rate-change banner appears.
+                let update = ServiceUpdate(tokenRate: announce.tokenRate, tabThresholdTokens: announce.tabThreshold)
+                if let synthetic = try? MessageEnvelope.wrap(type: .serviceUpdate, senderID: providerID, payload: update) {
+                    onMessageReceived?(synthetic)
+                }
             }
 
             print("[BonjourBrowser] Discovered provider: \(announce.providerName) (\(providerID))")

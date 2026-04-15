@@ -78,6 +78,11 @@ class MPCAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTransport {
             maxOutputTokens: maxOutputTokens,
             paymentModel: paymentModel
         )
+        // Re-send updated ServiceAnnounce to all currently connected MPC peers,
+        // mirroring what BonjourAdvertiser does via tempConnections.
+        for peer in clientSessions.keys {
+            sendServiceAnnounce(to: peer)
+        }
     }
 
     /// Send a message envelope to a specific peer by sender ID.

@@ -363,10 +363,26 @@ class SessionManager: ObservableObject {
         channel.map { Int($0.deposit) } ?? sessionGrant.maxCredits
     }
 
-    /// Update local state after receiving an InferenceResponse.
+    /// Update local state after receiving an InferenceResponse (prepaid / non-tab mode).
+    ///
+    /// Advances the spend state so `remainingCredits` reflects credits paid.
+    /// Do NOT call this in tab mode — use `recordReceiptOnly()` instead.
+    /// In tab mode, `spendState` is advanced only at settlement time (via `recordTabSettlement`)
+    /// to prevent double-counting: per-response accrual + settlement accrual = 2× actual spend.
     func recordSpend(creditsCharged: Int, receipt: Receipt) {
         spendState.advance(creditsCharged: creditsCharged)
         remainingCredits = creditCeiling - spendState.cumulativeSpend
+        receipts.insert(receipt, at: 0)
+        persist()
+    }
+
+    /// Store a receipt without advancing the spend state (tab mode only).
+    ///
+    /// In the tab model the channel is authorized at settlement time, not per-response.
+    /// Calling `recordSpend()` on every response AND `recordTabSettlement()` at cycle end
+    /// would double-count every credit, inflating `spendState.cumulativeSpend` and causing
+    /// the next settlement voucher's `newCumulative` to exceed the deposit.
+    func recordReceiptOnly(receipt: Receipt) {
         receipts.insert(receipt, at: 0)
         persist()
     }

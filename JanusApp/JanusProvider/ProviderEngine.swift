@@ -143,8 +143,8 @@ class ProviderEngine: ObservableObject {
     private var tabByChannelId: [String: UInt64] = [:]
     /// channelId hex → requestID of outstanding TabSettlementRequest. Persisted for crash recovery + replay prevention.
     private var pendingTabSettlementByChannelId: [String: String] = [:]
-    private let tokenRate: UInt64 = 10          // credits per 1000 tokens
-    private let tabThresholdTokens: UInt64 = 500 // tokens before settlement required
+    @Published var tokenRate: UInt64 = 10          // credits per 1000 tokens
+    @Published var tabThresholdTokens: UInt64 = 5000 // tokens before settlement required
 
     // Tempo voucher path
     private var channels: [String: Channel] = [:] {         // sessionID → Channel
@@ -223,6 +223,9 @@ class ProviderEngine: ObservableObject {
             if let pending = persisted.pendingTabSettlementByChannelId {
                 self.pendingTabSettlementByChannelId = pending
             }
+            // Restore operator-configured pricing (clamp to safe minimums)
+            if let rate = persisted.tokenRate { self.tokenRate = max(1, rate) }
+            if let threshold = persisted.tabThresholdTokens { self.tabThresholdTokens = max(100, threshold) }
             print("Restored provider state: \(persisted.totalRequestsServed) served")
         } else {
             self.providerID = providerID
@@ -677,6 +680,13 @@ class ProviderEngine: ObservableObject {
         guard let channel = channels[request.sessionID] else { return }
         let channelIdHex = channel.channelId.map { String(format: "%02x", $0) }.joined()
 
+        // Snapshot pricing at method entry. tokenRate and tabThresholdTokens are @Published vars
+        // that the operator can change via the UI. Capturing locals here prevents a SwiftUI
+        // .onChange event from mutating them mid-inference (during the await mlxRunner.generate yield).
+        // tabThresholdTokens takes effect from the next request cycle, not retroactively.
+        let tokenRate = self.tokenRate
+        let tabThresholdTokens = self.tabThresholdTokens
+
         // 1. Check deposit sufficiency (must cover at least one full tab cycle above current authorized amount).
         // Use deposit - authorizedAmount, not remainingDeposit (deposit - settled), because
         // unsettled-but-authorized credits are already committed — vouchers can't exceed deposit.
@@ -717,8 +727,11 @@ class ProviderEngine: ObservableObject {
         }
 
         // 4. Update tab (min 1 to prevent 0-credit monotonicity violation)
+        // inferenceResult.outputTokenCount includes both input and output tokens.
+        // Re-read tabByChannelId post-await to pick up any concurrent Task's write
+        // (concurrent handlePromptRequest calls both yield at the mlxRunner.generate await).
         let tokensUsed = UInt64(max(1, inferenceResult.outputTokenCount))
-        let newTab = currentTab + tokensUsed
+        let newTab = (tabByChannelId[channelIdHex] ?? 0) + tokensUsed
         tabByChannelId[channelIdHex] = newTab
 
         // 5. Compute credits (ceiling division, min 1)
@@ -743,7 +756,8 @@ class ProviderEngine: ObservableObject {
             tabUpdate: TabUpdate(
                 tokensUsed: tokensUsed,
                 cumulativeTabTokens: newTab,
-                tabThreshold: tabThresholdTokens
+                tabThreshold: tabThresholdTokens,
+                tokenRate: tokenRate
             )
         )
         lastResponses[request.sessionID] = response
@@ -803,6 +817,8 @@ class ProviderEngine: ObservableObject {
         }
 
         guard let vv = voucherVerifier else { return }
+        // Snapshot rate at method entry — must match the rate used when settlement was requested.
+        let tokenRate = self.tokenRate
         let tabTokens = tabByChannelId[channelIdHex] ?? 0
         let tabCredits = max(1, (tabTokens * tokenRate + 999) / 1000)
 
@@ -895,6 +911,19 @@ class ProviderEngine: ObservableObject {
         persistState()
     }
 
+    // MARK: - Service update broadcast
+
+    /// Push updated pricing to all currently-connected clients.
+    /// Called by ProviderStatusView.persistAndBroadcast() when the operator changes a picker.
+    /// Only reaches sessions that have sent at least one request (sessionToSender populated).
+    /// Clients that reconnect later pick up the new rate from ServiceAnnounce.
+    func broadcastServiceUpdate() {
+        let update = ServiceUpdate(tokenRate: tokenRate, tabThresholdTokens: tabThresholdTokens)
+        for sessionID in sessionToSender.keys {
+            send(type: .serviceUpdate, payload: update, toSession: sessionID)
+        }
+    }
+
     // MARK: - Persistence
 
     // Receipts issued (for future settlement)
@@ -939,7 +968,9 @@ class ProviderEngine: ObservableObject {
             settlementThreshold: settlementThreshold,
             settledChannelAmounts: settledChannelAmounts.isEmpty ? nil : settledChannelAmounts,
             tabByChannelId: tabByChannelId.isEmpty ? nil : tabByChannelId,
-            pendingTabSettlementByChannelId: pendingTabSettlementByChannelId.isEmpty ? nil : pendingTabSettlementByChannelId
+            pendingTabSettlementByChannelId: pendingTabSettlementByChannelId.isEmpty ? nil : pendingTabSettlementByChannelId,
+            tokenRate: tokenRate,
+            tabThresholdTokens: tabThresholdTokens
         )
         do {
             try store.save(state, as: Self.filename)

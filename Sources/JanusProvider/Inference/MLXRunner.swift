@@ -6,7 +6,8 @@ import JanusShared
 /// Output from a single inference run.
 public struct InferenceResult: Sendable {
     public let outputText: String
-    /// Number of output tokens generated (used for tab-based billing).
+    /// Total tokens consumed by this request: input (prompt) + output (generated).
+    /// Both contribute to context window usage and are billed in the tab model.
     public let outputTokenCount: Int
 }
 
@@ -60,12 +61,15 @@ actor MLXRunner {
 
         let cleanedText = Self.stripThinkingTags(rawResponse)
 
-        // Count output tokens for tab billing
-        let outputTokenCount = await container.perform { ctx in
-            ctx.tokenizer.encode(text: cleanedText, addSpecialTokens: false).count
+        // Count input + output tokens for tab billing.
+        // Both contribute to context usage and are fairly charged to the client.
+        let totalTokenCount = await container.perform { ctx in
+            let inputTokens = ctx.tokenizer.encode(text: fullPrompt, addSpecialTokens: false).count
+            let outputTokens = ctx.tokenizer.encode(text: cleanedText, addSpecialTokens: false).count
+            return inputTokens + outputTokens
         }
 
-        return InferenceResult(outputText: cleanedText, outputTokenCount: outputTokenCount)
+        return InferenceResult(outputText: cleanedText, outputTokenCount: totalTokenCount)
     }
 
     var isLoaded: Bool {

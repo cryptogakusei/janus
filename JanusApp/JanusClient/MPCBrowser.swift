@@ -556,7 +556,16 @@ extension MPCBrowser: MCSessionDelegate {
         switch envelope.type {
         case .serviceAnnounce:
             if let announce = try? envelope.unwrap(as: ServiceAnnounce.self) {
+                let isUpdate = connectedProvider != nil  // already connected → pricing re-send
                 connectedProvider = announce
+                // Synthesize ServiceUpdate for re-sends so ClientEngine.handleServiceUpdate fires
+                // and the rate-change banner appears — same logic as BonjourBrowser.
+                if isUpdate {
+                    let update = ServiceUpdate(tokenRate: announce.tokenRate, tabThresholdTokens: announce.tabThreshold)
+                    if let synthetic = try? MessageEnvelope.wrap(type: .serviceUpdate, senderID: announce.providerID, payload: update) {
+                        onMessageReceived?(synthetic)
+                    }
+                }
             }
         case .ping, .pong:
             break

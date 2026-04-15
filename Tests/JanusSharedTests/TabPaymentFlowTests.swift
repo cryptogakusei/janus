@@ -36,13 +36,14 @@ final class TabPaymentFlowTests: XCTestCase {
     // MARK: - Test 1: TabUpdate serialization round-trip
 
     func testTabUpdate_serializationRoundTrip() throws {
-        let original = TabUpdate(tokensUsed: 150, cumulativeTabTokens: 350, tabThreshold: 500)
+        let original = TabUpdate(tokensUsed: 150, cumulativeTabTokens: 350, tabThreshold: 500, tokenRate: 10)
         let data = try JSONEncoder.janus.encode(original)
         let decoded = try JSONDecoder.janus.decode(TabUpdate.self, from: data)
 
         XCTAssertEqual(decoded.tokensUsed, 150)
         XCTAssertEqual(decoded.cumulativeTabTokens, 350)
         XCTAssertEqual(decoded.tabThreshold, 500)
+        XCTAssertEqual(decoded.tokenRate, 10)
     }
 
     // MARK: - Test 2: TabSettlementRequest serialization round-trip

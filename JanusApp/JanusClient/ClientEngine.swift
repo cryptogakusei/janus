@@ -39,6 +39,8 @@ class ClientEngine: ObservableObject {
 
     // Disconnect detection
     @Published var disconnectedDuringRequest = false
+    /// Set when provider pushes a ServiceUpdate mid-session. Cleared on disconnect or user dismiss.
+    @Published var rateChangeNotice: String? = nil
 
     enum RequestState: String {
         case idle = "Ready"
@@ -59,6 +61,8 @@ class ClientEngine: ObservableObject {
     var pendingPromptText: String?
     private var requestTimeoutTask: Task<Void, Never>?
     private var sessionCreationGeneration = 0
+    /// Tracks the providerID of the last session we created, so we don't re-create on pricing re-announces.
+    private var currentConnectedProviderID: String?
 
     convenience init() {
         self.init(transport: CompositeTransport())
@@ -81,8 +85,15 @@ class ClientEngine: ObservableObject {
                 self?.connectedProvider = provider
                 self?.connectionMode = self?.transport.connectionMode ?? .disconnected
                 if let provider {
-                    self?.createSession(providerID: provider.providerID)
+                    // Only create/restore a session when the provider actually changes.
+                    // Pricing re-announcements from the same provider update connectedProvider
+                    // (so DiscoveryView refreshes) but must NOT disrupt an active session.
+                    if self?.currentConnectedProviderID != provider.providerID {
+                        self?.currentConnectedProviderID = provider.providerID
+                        self?.createSession(providerID: provider.providerID)
+                    }
                 } else {
+                    self?.currentConnectedProviderID = nil
                     // Detect disconnect during active request
                     if let self, self.requestState == .waitingForResponse || self.requestState == .awaitingSettlement {
                         self.cancelRequestTimeout()
@@ -95,6 +106,7 @@ class ClientEngine: ObservableObject {
                     self?.sessionReady = false
                     self?.channelStatus = ""
                     self?.connectionMode = .disconnected
+                    self?.rateChangeNotice = nil
                 }
             }
             .store(in: &cancellables)
@@ -305,9 +317,28 @@ class ClientEngine: ObservableObject {
         case .errorResponse:
             guard let error = try? envelope.unwrap(as: ErrorResponse.self) else { return }
             handleError(error)
+        case .serviceUpdate:
+            guard let update = try? envelope.unwrap(as: ServiceUpdate.self) else { return }
+            handleServiceUpdate(update)
         default:
             break
         }
+    }
+
+    private func handleServiceUpdate(_ update: ServiceUpdate) {
+        // Clamp incoming values — provider may be buggy or send 0
+        let safeRate = max(1, update.tokenRate)
+        let safeThreshold = max(100, update.tabThresholdTokens)
+
+        // Update connectedProvider in place (tokenRate/tabThreshold are var after §0C)
+        connectedProvider?.tokenRate = safeRate
+        connectedProvider?.tabThreshold = safeThreshold  // note: field is tabThreshold on ServiceAnnounce
+
+        // Keep SessionManager in sync — it stores these independently
+        sessionManager?.tokenRate = safeRate
+        sessionManager?.tabThreshold = safeThreshold
+
+        rateChangeNotice = "Provider updated pricing: \(safeRate) credits / 1K tokens · settle every \(safeThreshold) tokens"
     }
 
     private func handleTabSettlementRequest(_ req: TabSettlementRequest) {
@@ -340,9 +371,13 @@ class ClientEngine: ObservableObject {
     private func handleInferenceResponse(_ response: InferenceResponse) {
         guard response.requestID == pendingRequestID else { return }
 
-        // Tab model: verify creditsCharged matches tokenRate × tokensUsed
+        // Tab model: verify creditsCharged matches tokenRate × tokensUsed.
+        // Use tabUpdate.tokenRate (rate used at computation time) when present to avoid a
+        // ServiceUpdate / InferenceResponse arrival-order race. Fall back to connectedProvider.tokenRate
+        // for legacy responses (tabUpdate.tokenRate == 0).
         if let tabUpdate = response.tabUpdate, let provider = connectedProvider, provider.paymentModel == "tab" {
-            let expected = Int(max(1, (tabUpdate.tokensUsed * provider.tokenRate + 999) / 1000))
+            let rateForCheck = tabUpdate.tokenRate > 0 ? tabUpdate.tokenRate : provider.tokenRate
+            let expected = Int(max(1, (tabUpdate.tokensUsed * rateForCheck + 999) / 1000))
             guard response.creditsCharged == expected else {
                 errorMessage = "Provider charged \(response.creditsCharged) but token count implies \(expected)"
                 requestState = .error
@@ -351,7 +386,7 @@ class ClientEngine: ObservableObject {
                 pendingPromptText = nil
                 return
             }
-            sessionManager?.applyTabUpdate(tabUpdate, tokenRate: provider.tokenRate)
+            sessionManager?.applyTabUpdate(tabUpdate, tokenRate: rateForCheck)
         }
 
         // Verify the provider's receipt signature before accepting
@@ -382,10 +417,18 @@ class ClientEngine: ObservableObject {
 
         cancelRequestTimeout()
         lastResult = response
-        sessionManager?.recordSpend(
-            creditsCharged: response.creditsCharged,
-            receipt: response.receipt
-        )
+        // Tab mode: do NOT advance spendState here — only advance at settlement time
+        // (recordTabSettlement). Calling recordSpend() AND recordTabSettlement() for the
+        // same credits would double-count, inflating spendState and causing voucher creation
+        // to exceed the channel deposit on the next settlement cycle.
+        if connectedProvider?.paymentModel == "tab" {
+            sessionManager?.recordReceiptOnly(receipt: response.receipt)
+        } else {
+            sessionManager?.recordSpend(
+                creditsCharged: response.creditsCharged,
+                receipt: response.receipt
+            )
+        }
         // Store in history (persisted via SessionManager)
         if let task = pendingTaskType, let prompt = pendingPromptText {
             let entry = HistoryEntry(task: task, prompt: prompt, response: response)
@@ -457,7 +500,10 @@ class ClientEngine: ObservableObject {
             return
         }
         if error.errorCode == .tabSettlementRequired {
-            // Tab settlement is being handled by handleTabSettlementRequest — ignore the paired error
+            // A TabSettlementRequest is incoming — pre-set the state so the UI shows
+            // "Settling tab..." immediately rather than staying stuck at "Processing...".
+            // handleTabSettlementRequest will set .awaitingSettlement again (idempotent).
+            requestState = .awaitingSettlement
             return
         }
         errorMessage = "[\(error.errorCode.rawValue)] \(error.errorMessage)"
@@ -475,7 +521,7 @@ class ClientEngine: ObservableObject {
         requestTimeoutTask?.cancel()
         transport.checkConnectionHealth()
         requestTimeoutTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 20_000_000_000) // 20 seconds
+            try? await Task.sleep(nanoseconds: 60_000_000_000) // 60 seconds
             guard !Task.isCancelled,
                   pendingRequestID == requestID,
                   requestState == .waitingForResponse else { return }

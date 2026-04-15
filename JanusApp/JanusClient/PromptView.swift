@@ -35,6 +35,21 @@ struct PromptView: View {
                     channelStatusBanner
                 }
 
+                // Rate-change notice — outside the if/else if chain so it shows alongside other banners
+                if let notice = engine.rateChangeNotice {
+                    HStack {
+                        Image(systemName: "info.circle")
+                        Text(notice)
+                            .font(.caption)
+                        Spacer()
+                        Button("Dismiss") { engine.rateChangeNotice = nil }
+                            .font(.caption)
+                    }
+                    .padding(8)
+                    .background(.blue.opacity(0.1))
+                    .cornerRadius(8)
+                }
+
                 taskPicker
 
                 promptInput

@@ -31,6 +31,7 @@ struct ProviderStatusView: View {
                     statusStrip
                     statsStrip
                     settlementSettingsSection
+                    pricingSection
                     clientsSection
                     allLogsSection
                 }
@@ -56,7 +57,11 @@ struct ProviderStatusView: View {
             }
             advertiser.updateServiceAnnounce(
                 providerPubkey: engine.providerPubkeyBase64,
-                providerEthAddress: engine.providerEthKeyPair?.address.checksumAddress
+                providerEthAddress: engine.providerEthKeyPair?.address.checksumAddress,
+                tokenRate: engine.tokenRate,
+                tabThreshold: engine.tabThresholdTokens,
+                maxOutputTokens: 1024,
+                paymentModel: "tab"
             )
             advertiser.startAdvertising()
             Task { await engine.loadModel() }
@@ -222,6 +227,71 @@ struct ProviderStatusView: View {
         .onChange(of: engine.settlementThreshold) { _, _ in
             engine.persistState()
         }
+    }
+
+    // MARK: - Pricing settings
+
+    private var pricingSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Pricing")
+                .font(.subheadline.bold())
+
+            HStack {
+                Text("Rate:")
+                    .font(.caption)
+                // tag() values must be explicit UInt64 — Int literals silently break Picker binding
+                Picker("", selection: $engine.tokenRate) {
+                    Text("5").tag(UInt64(5))
+                    Text("10").tag(UInt64(10))
+                    Text("20").tag(UInt64(20))
+                    Text("50").tag(UInt64(50))
+                }
+                .pickerStyle(.segmented)
+                Text("credits / 1K tokens")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Text("Settle every:")
+                    .font(.caption)
+                Picker("", selection: $engine.tabThresholdTokens) {
+                    Text("100").tag(UInt64(100))
+                    Text("500").tag(UInt64(500))
+                    Text("1K").tag(UInt64(1000))
+                    Text("5K").tag(UInt64(5000))
+                }
+                .pickerStyle(.segmented)
+                Text("tokens")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.gray.opacity(0.05))
+        .cornerRadius(10)
+        // tabThresholdTokens takes effect from the next request cycle, not current in-flight ones.
+        .onChange(of: engine.tokenRate) { _, _ in persistAndBroadcast() }
+        .onChange(of: engine.tabThresholdTokens) { _, _ in persistAndBroadcast() }
+    }
+
+    /// Persist pricing, push ServiceUpdate to connected clients, and rebroadcast ServiceAnnounce.
+    /// Single helper prevents the two .onChange handlers from drifting apart.
+    private func persistAndBroadcast() {
+        engine.persistState()
+        engine.broadcastServiceUpdate()  // reaches clients with ≥1 prior request (sessionToSender)
+        // updateServiceAnnounce re-sends ServiceAnnounce via tempConnections, covering ALL
+        // connected clients including those who haven't made a request yet.
+        // maxOutputTokens hardcoded at 1024 — future item to make configurable (#13f)
+        advertiser.updateServiceAnnounce(
+            providerPubkey: engine.providerPubkeyBase64,
+            providerEthAddress: engine.providerEthKeyPair?.address.checksumAddress,
+            tokenRate: engine.tokenRate,
+            tabThreshold: engine.tabThresholdTokens,
+            maxOutputTokens: 1024,
+            paymentModel: "tab"
+        )
     }
 
     // MARK: - Clients section

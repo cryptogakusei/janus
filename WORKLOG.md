@@ -104,6 +104,68 @@ Net: ~424 lines deleted (PricingTier 104 + QuoteResponse + quote blocks), ~600 l
 - `xcodebuild build -scheme JanusClient` → **BUILD SUCCEEDED**
 - `xcodebuild test -scheme JanusClientTests` → **63 tests, 0 failures**
 
+### Bug #13d-R1: Tab accumulation race condition under rapid concurrent requests (FIXED)
+
+**Symptom**: When two requests are submitted in quick succession, the second request shows no tab increase in the client UI. The third request then shows a large jump that accounts for both. The inference responses themselves are correct — only the tab accounting is wrong.
+
+**Root cause**: Stale capture of `currentTab` across the `await mlxRunner.generate(...)` yield point in `ProviderEngine.handlePromptRequest()`.
+
+```
+// In handlePromptRequest():
+let currentTab = tabByChannelId[channelIdHex] ?? 0   // ← captured before await
+// ... deposit check uses currentTab ...
+let result = try await mlxRunner.generate(...)        // ← @MainActor yields here; other Tasks run
+// ...
+let newTab = currentTab + tokensUsed                  // ← stale capture, ignores concurrent Task's write
+tabByChannelId[channelIdHex] = newTab                 // ← last-writer-wins: overwrites sibling's update
+```
+
+When two `Task { await handlePromptRequest(...) }` run concurrently:
+1. Task A captures `currentTab = T`, yields at `await`.
+2. Task B captures `currentTab = T` (same value — Task A hasn't written yet), yields at `await`.
+3. Task A finishes inference, writes `tabByChannelId = T + tokensA`. Client sees no jump for request B (because `TabUpdate` is embedded in Task B's response, which hasn't arrived yet).
+4. Task B finishes inference, writes `tabByChannelId = T + tokensB`, **overwriting** Task A's contribution.
+5. Client receives Task B's response with `cumulativeTabTokens = T + tokensB` — appears as a big jump because the tab was at `T + tokensA` momentarily, but the stored value rolled back.
+
+**Effect**: `tabByChannelId` loses Task A's token contribution. Over time, the tab under-counts actual token usage, allowing clients to defer settlement longer than the threshold intends.
+
+**Fix (not implemented)**: Re-read `tabByChannelId` after inference returns, not before:
+```swift
+// After await mlxRunner.generate(...):
+let currentTabPostInference = tabByChannelId[channelIdHex] ?? 0
+let newTab = currentTabPostInference + tokensUsed
+tabByChannelId[channelIdHex] = newTab
+```
+This is safe because `@MainActor` guarantees the read-modify-write is atomic (no interleaving between the read and the write). The deposit check before inference still uses the pre-inference snapshot — that is acceptable since the check is a soft guard (the channel deposit is not atomically locked).
+
+**Priority**: Low. The race requires concurrent in-flight inferences to the same provider, which is unlikely in v1 single-client scenarios. The accounting error self-corrects at settlement (voucher is for exact tab credits). The client is not overcharged; the provider may slightly undercharge.
+
+**Files to change when fixing**: `JanusApp/JanusProvider/ProviderEngine.swift` — `handlePromptRequest()`, the `currentTab` capture and `newTab` assignment post-`await mlxRunner.generate`.
+
+### Roadmap #13d-T1: Tab payment model unit tests (PENDING)
+
+Phase 7 of the #13d plan — deferred to a future session. All production code is complete and manually verified. These tests cover correctness of the tab accounting logic in isolation.
+
+**New file: `Tests/JanusSharedTests/TabPaymentFlowTests.swift`** (~22 tests)
+
+| # | Test | What it checks |
+|---|------|---------------|
+| 1–4 | Serialization | `TabUpdate`, `TabSettlementRequest`, nil `quoteID` round-trip, legacy non-nil `quoteID` backward compat |
+| 5–7, 17–20 | `verifyTabSettlement()` | Happy path + 6 rejection cases (channel not open, wrong provider, channel mismatch, non-monotonic voucher, insufficient amount, exceeds deposit) |
+| 8 | `PersistedProviderState` tab fields | Round-trip with and without tabs present |
+| 9–11 | Ceiling division | Exactly-at-threshold, zero-token min-1, table-driven correctness across several values |
+| 12–15 | Tab lifecycle | Reset after settlement, accumulation across requests, replay prevention (duplicate requestID rejected), replay prevention (wrong requestID rejected) |
+| 16 | Deposit-too-small guard | Provider rejects request when channel deposit < one full tab cycle |
+| 21 | Full tab cycle integration | 3 prompts → tab crosses threshold → settlement → tab resets → 4th prompt proceeds |
+| 22 | Crash recovery | Mid-cycle restart (tab resumes from persisted value) + during-settlement restart (pending requestID re-sent on reconnect) |
+
+**Updates to existing test files:**
+- `Tests/JanusSharedTests/ProtocolTests.swift`: update `testServiceAnnounceRoundTrip()` for new fields; add `testServiceAnnounce_oldJSON_decodesWithDefaults()` (backward compat)
+- `Tests/JanusSharedTests/VoucherFlowTests.swift`: `makeAuth()` helper `quoteID` param → `String? = "test-quote-id"`
+- `JanusApp/JanusClientTests/ClientEngineTests.swift`: remove 2 stale quote tests; add `testHandleTabSettlementRequest_autoApproves()` and fraud-check update
+
+**Verification:** `xcodebuild test -scheme Janus-Package` should go from 206 → ~228 tests, 0 failures.
+
 ---
 
 ## 2026-03-23
@@ -1691,7 +1753,9 @@ Full prioritized list of all remaining features across relay, transport, payment
 | 13 | ~~Periodic & threshold-based settlement~~ | Small | — | **DONE.** Provider settles on a configurable timer (default 5 min) and/or when aggregate unsettled credits cross a threshold (default 50). Provider UI with segmented pickers. Persisted settings survive restart. Bug fix: `settledAmount` desync after provider restart caused inflated `unsettledAmount` and premature threshold triggers — fixed by initializing `settledAmount` from on-chain state during channel verification. Additional hardening: startup race fix (fund→retry→timer ordering), settlement queuing (no dropped disconnect requests), 24h TTL on stale channels, zombie channel prevention (re-check on-chain after tx revert), computed `activeSessionCount`. |
 | 13b | Real token economics / USD pricing | Product decision | — | Dynamic pricing by model load, token count, or USD denomination. Currently fixed 3/5/8 credit tiers. |
 | 13d | ~~Tab-based postpaid payment model~~ | Large | — | **DONE.** Replace the current quote→voucher→response flow with a postpaid tab model. Provider serves inference and accumulates a running token tab per client (input + output tokens counted after inference, so charging is exact). Once the tab crosses a configurable threshold (e.g. 100 tokens worth of credits), provider blocks new requests until client sends a voucher for the exact accumulated amount. Tab resets and client can continue. Provider persists tab per client (by channel ID) so a disconnecting client cannot escape the debt by reconnecting — the tab resumes from where it left off. **Why this fits the use case:** designed for rural/village networks where social reputation enforces payment and cryptographic upfront commitment is unnecessary overhead. Threshold is kept small so unpaid exposure per client is always bounded. **Tradeoffs:** (1) client trusts provider's token count post-inference — no cryptographic price commitment before serving; (2) provider attack of inflating token count is possible but reputation-destroying; (3) provider withholding response after incrementing tab is a losing strategy (loses reputation, loses payment). **Protocol changes required:** (a) remove `QuoteResponse` message type — no upfront quote needed; (b) remove `VoucherAuthorization` before inference — voucher is now sent reactively when threshold crossed; (c) add `TabUpdate` message: provider → client after each response with `{tokensUsed, cumulativeTabTokens, tabThreshold}`; (d) add `TabSettlementRequest` message: provider → client when threshold crossed, blocking further requests; (e) `ServiceAnnounce` changes: replace small/medium/large pricing with `tokenRate` (credits per 1000 tokens) and `tabThreshold` (tokens before settlement required); (f) provider persistence: add running tab per channel ID to `PersistedProviderState`; (g) client UI: show running tab in balance bar alongside remaining credits. **What stays the same:** escrow channel, voucher format, on-chain settlement — only the trigger and timing of voucher signing changes. |
-| 13e | Provider-configurable pricing (tokenRate + tabThreshold) | Small | #13d | **Immediate follow-up to #13d.** Feature #13d hardcodes `tokenRate = 10 credits/1000 tokens` and `tabThresholdTokens = 500` as constants in `ProviderEngine`. This feature makes them operator-configurable so each provider can set their own price and settlement cadence — the same way current AI API providers advertise dollars per million tokens. **What changes:** (1) Add a `ProviderPricingConfig` struct (or extend `PersistedProviderState`) with `tokenRate: UInt64` and `tabThreshold: UInt64` fields, persisted to disk. (2) Add a provider settings UI section ("Pricing") with two numeric fields: "Rate (credits / 1000 tokens)" and "Settle every N tokens". (3) `ProviderEngine` reads these from config rather than hardcoded `let` constants — `updateServiceAnnounce()` picks up the new values and rebroadcasts immediately when changed. (4) Reasonable defaults: `tokenRate = 10`, `tabThreshold = 500`. **Why this matters:** different providers run different models with different compute costs; a provider running a 3B model on an old phone should charge less than one running a 70B model on a Mac Studio. The market can only work if providers can set their own prices. |
+| 13e | Provider-configurable pricing (tokenRate + tabThreshold) | Small | #13d | **Immediate follow-up to #13d.** Feature #13d hardcodes `tokenRate = 10 credits/1000 tokens` and `tabThresholdTokens = 500` as constants in `ProviderEngine`. This feature makes them operator-configurable so each provider can set their own price and settlement cadence. **What changes:** (1) Extend `PersistedProviderState` with `tokenRate: UInt64?` and `tabThresholdTokens: UInt64?` (decodeIfPresent, nil = use defaults). (2) Add provider settings UI section ("Pricing") with segmented pickers. (3) `ProviderEngine` `@Published var` instead of `private let` constants — restored from disk on launch with validation clamps. (4) Rate snapshot locals at top of `handlePromptRequest` and `handleTabSettlementVoucher` to prevent mid-inference picker change from causing accounting inconsistency. (5) `ServiceUpdate` message type (new) pushed to all connected clients when operator changes a picker — client updates `connectedProvider` in place and shows a dismissible info banner. No accept/reject in this version (deferred to #13e+1). (6) Remove dead 2-param convenience overload in `ProviderAdvertiserTransport`. **Why this matters:** providers running different models have different compute costs; the market can only work if providers can set their own prices. |
+| 13e+1 | Rate-change accept/reject for client | Small | #13e | When provider sends a `ServiceUpdate` mid-session, client currently just shows an info banner. This feature adds a proper accept/reject dialog: provider sends a `RateChangeProposal`, client gets N seconds to accept or auto-disconnect, provider only commits the new rate once accepted. Deferred from #13e to keep scope small. |
+| 13g | Pricing constraint check: tab cycle vs auto-settlement threshold | Small | #13e | When the operator saves pricing settings, validate that one full tab cycle doesn't generate more credits than the auto-settlement threshold. Concretely: `tabCycleCredits = ceil(tabThresholdTokens × tokenRate / 1000)`. If `tabCycleCredits > settlementThreshold > 0`, show an inline warning in the provider UI: *"Tab cycle (~X credits) exceeds auto-settlement threshold (Y). Consider raising the threshold or lowering rate/tokens."* Not a hard block — the system still works correctly, but on-chain settlement fires mid-tab rather than at clean voucher boundaries, wasting gas and producing confusing accounting. **What changes:** (1) `ProviderStatusView.persistAndBroadcast()` computes `tabCycleCredits` and compares to `engine.settlementThreshold`. (2) Add `@Published var pricingWarning: String? = nil` to `ProviderEngine` (or compute inline in the view). (3) Show warning label below the pricing section when non-nil. No protocol changes, no persistence changes. |
 | 13f | USD/million-token display for provider pricing | Small | #13e | **Immediate follow-up to #13e.** The internal `tokenRate` is in credits per 1000 tokens (an abstract unit). This feature surfaces a human-readable price alongside credits: "X credits / 1000 tokens  ≈  $Y / 1M tokens" — the standard denomination used by OpenAI, Anthropic, and every current inference API provider. **What changes:** (1) Add a `CreditConversion` utility: given the on-chain credit-to-USD exchange rate (read from `TempoConfig` or a hardcoded testnet rate), compute `dollarsPerMillionTokens = (tokenRate / 1000) * creditsToUSD * 1_000_000`. (2) `DiscoveryView` provider cards show both: "10 credits/1K tokens  ·  ~$0.50/1M tokens". (3) Provider settings UI shows the computed USD equivalent as a live preview while the operator types their rate — so they can reason in familiar terms before saving. (4) No on-chain changes; purely a display layer. **Why this matters:** village operators need to set prices that make economic sense relative to the outside world. Showing only "credits" is opaque; showing an equivalent dollar rate lets them benchmark against cloud providers and set fair prices. |
 | 13c | ~~Remove Privy SDK~~ | Small | — | **DONE.** Deleted `PrivyAuthManager`, `PrivyWalletProvider`, `LoginView`. Removed Privy SPM dependency and all 14 pbxproj entries. App opens directly to `DiscoveryView` — no login, no internet at startup. All signing and on-chain ops already used `LocalWalletProvider` since #12a. Net: −571 lines. |
 | 14 | Mainnet deployment | Small | — | TempoConfig.mainnet + deploy TempoStreamChannel contract to mainnet. No code changes needed. |

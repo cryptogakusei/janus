@@ -160,6 +160,13 @@ class BonjourAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTransport
             maxOutputTokens: maxOutputTokens,
             paymentModel: paymentModel
         )
+        // Re-send updated ServiceAnnounce to all currently connected clients.
+        // Uses tempConnections (populated on TCP connect) so it reaches clients
+        // that haven't sent any messages yet — the window where broadcastServiceUpdate
+        // (keyed on sessionToSender) would miss them.
+        for clientID in tempConnections.keys {
+            sendServiceAnnounce(toClient: clientID)
+        }
     }
 
     // MARK: - Connection Handling

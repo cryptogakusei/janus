@@ -41,13 +41,6 @@ protocol ProviderAdvertiserTransport: AnyObject {
 
 // Default implementations derived from connectedClients.
 extension ProviderAdvertiserTransport {
-    /// Convenience overload with tab-economics defaults — used by call sites that
-    /// haven't yet been wired up to configurable values (Feature #13e).
-    func updateServiceAnnounce(providerPubkey: String, providerEthAddress: String?) {
-        updateServiceAnnounce(providerPubkey: providerPubkey, providerEthAddress: providerEthAddress,
-                              tokenRate: 10, tabThreshold: 500, maxOutputTokens: 1024, paymentModel: "tab")
-    }
-
     func displayName(forSender senderID: String) -> String? {
         connectedClients[senderID]
     }
