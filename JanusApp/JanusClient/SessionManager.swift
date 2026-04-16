@@ -291,17 +291,15 @@ class SessionManager: ObservableObject {
 
     /// Open the payment channel on-chain.
     ///
-    /// Constructs a `QueueingWalletProvider` using the *current* `tempoConfig.urlSession`
+    /// Constructs a `QueueingWalletProvider` using the *current* `tempoConfig.transport`
     /// at invocation time, so the RPC call routes over whichever interface has internet.
-    ///
-    /// On "RPC unavailable" failures (transient: iOS Wi-Fi Assist hasn't switched to
-    /// cellular yet), the op is re-enqueued via the connectivity manager and retried up
-    /// to `maxAttempts` times. Each retry fires only after the connectivity manager
-    /// confirms internet is available again.
+    /// When WiFi has no WAN uplink, `tempoConfig.transport` is a `CellularTransport` backed
+    /// by `NWConnection.requiredInterfaceType = .cellular`.
     private func openChannelOnChain(ethKP: EthKeyPair, channel: Channel, attempt: Int = 0) async {
         let maxAttempts = 8
         guard let rpcURL = tempoConfig.rpcURL else { return }
-        let wallet = QueueingWalletProvider(keyPair: ethKP, rpc: EthRPC(rpcURL: rpcURL, session: tempoConfig.urlSession))
+        let config = tempoConfig  // snapshot once so both wallet and opener use the same transport
+        let wallet = QueueingWalletProvider(keyPair: ethKP, rpc: EthRPC(rpcURL: rpcURL, transport: config.transport))
         // Bug #11b-1: Skip the opener entirely when channel is already confirmed open.
         // ChannelOpener uses try? on its pre-existence RPC check — if the RPC call fails,
         // it proceeds to send open() which reverts because the channel already exists.
@@ -312,7 +310,7 @@ class SessionManager: ObservableObject {
         channelOnChainStatus = "Opening channel on-chain..."
         os_log("CHANNEL_ONCHAIN_START", log: smokeLog, type: .default)
 
-        let opener = ChannelOpener(config: tempoConfig)
+        let opener = ChannelOpener(config: config)
         let result = await opener.openChannel(wallet: wallet, channel: channel) { [weak self] status in
             Task { @MainActor [weak self] in self?.channelOnChainStatus = status }
         }
@@ -508,9 +506,10 @@ class SessionManager: ObservableObject {
             return
         }
         channelOnChainStatus = "Topping up..."
-        // Construct wallet with current session so the tx routes over the correct interface.
-        let wallet = QueueingWalletProvider(keyPair: ethKP, rpc: EthRPC(rpcURL: rpcURL, session: tempoConfig.urlSession))
-        let topUpService = ChannelTopUp(config: tempoConfig)
+        // Snapshot tempoConfig once so wallet and topUpService share the same transport.
+        let config = tempoConfig
+        let wallet = QueueingWalletProvider(keyPair: ethKP, rpc: EthRPC(rpcURL: rpcURL, transport: config.transport))
+        let topUpService = ChannelTopUp(config: config)
         let result = await topUpService.topUp(
             wallet: wallet,
             channel: channel,
