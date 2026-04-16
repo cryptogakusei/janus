@@ -71,7 +71,13 @@ final class PaymentConnectivityManager: ObservableObject {
     }()
 
     /// Cellular-capable session — used when WiFi has no WAN.
-    /// `waitsForConnectivity = false` so failures are immediate, not hung.
+    ///
+    /// We cannot force iOS to route over cellular using URLSessionConfiguration alone
+    /// (there is no "require cellular" equivalent of allowsCellularAccess = false).
+    /// However: the probe failure above signals iOS Wi-Fi Assist that this WiFi has
+    /// no internet, which causes iOS to transparently route subsequent URLSession
+    /// requests over cellular when `allowsCellularAccess = true`. Short timeouts
+    /// ensure any residual WiFi attempts fail fast.
     private lazy var cellularSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.allowsCellularAccess = true
@@ -155,7 +161,10 @@ final class PaymentConnectivityManager: ObservableObject {
         }
 
         internetReachability = .probing
-        let hasCellular = path.usesInterfaceType(.cellular)
+        // Use availableInterfaces — not usesInterfaceType(.cellular) — because
+        // usesInterfaceType returns false when WiFi is the active path even if
+        // cellular is present on the device.
+        let hasCellular = path.availableInterfaces.contains { $0.type == .cellular }
         probeTask = Task { @MainActor in
             await probe(hasCellular: hasCellular)
             startPeriodicProbe(hasCellular: hasCellular)
