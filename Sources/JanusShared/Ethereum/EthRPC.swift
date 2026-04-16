@@ -8,11 +8,18 @@ import Foundation
 public struct EthRPC: Sendable {
 
     public let rpcURL: URL
-    private let session: URLSession
+    private let transport: any HTTPTransport
 
+    /// Create with a URLSession (backward-compatible convenience init).
     public init(rpcURL: URL, session: URLSession = .shared) {
         self.rpcURL = rpcURL
-        self.session = session
+        self.transport = URLSessionTransport(session: session)
+    }
+
+    /// Create with an explicit transport (e.g. `CellularTransport` on iOS).
+    public init(rpcURL: URL, transport: any HTTPTransport) {
+        self.rpcURL = rpcURL
+        self.transport = transport
     }
 
     /// Call a contract function (eth_call) and return the raw hex result.
@@ -101,14 +108,12 @@ public struct EthRPC: Sendable {
             "params": params,
         ]
         let jsonData = try JSONSerialization.data(withJSONObject: body)
-        var request = URLRequest(url: rpcURL)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = jsonData
-        request.timeoutInterval = 15
-
-        let (responseData, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+        let (responseData, statusCode) = try await transport.post(
+            url: rpcURL,
+            headers: ["Content-Type": "application/json"],
+            body: jsonData
+        )
+        guard statusCode == 200 else {
             throw RPCError.httpError
         }
         guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {

@@ -49,16 +49,21 @@ class SessionManager: ObservableObject {
 
     /// Builds a TempoConfig that routes blockchain calls over whichever interface currently
     /// has confirmed internet access (WiFi-with-WAN first, cellular fallback).
+    ///
+    /// When WiFi has no WAN uplink (e.g. offline mesh), `internetTransport` returns a
+    /// `CellularTransport` backed by `NWConnection.requiredInterfaceType = .cellular` —
+    /// the only public iOS API that deterministically forces traffic onto the cellular modem.
     /// Called fresh at each on-chain operation so it always reflects the current interface.
     private var tempoConfig: TempoConfig {
         let base = TempoConfig.testnet
-        let session = connectivityManager?.internetSession ?? URLSession.shared
+        let transport: any HTTPTransport = connectivityManager?.internetTransport
+            ?? URLSessionTransport(session: .shared)
         return TempoConfig(
             escrowContract: base.escrowContract,
             paymentToken: base.paymentToken,
             chainId: base.chainId,
             rpcURL: base.rpcURL,
-            urlSession: session
+            transport: transport
         )
     }
 
@@ -288,7 +293,13 @@ class SessionManager: ObservableObject {
     ///
     /// Constructs a `QueueingWalletProvider` using the *current* `tempoConfig.urlSession`
     /// at invocation time, so the RPC call routes over whichever interface has internet.
-    private func openChannelOnChain(ethKP: EthKeyPair, channel: Channel) async {
+    ///
+    /// On "RPC unavailable" failures (transient: iOS Wi-Fi Assist hasn't switched to
+    /// cellular yet), the op is re-enqueued via the connectivity manager and retried up
+    /// to `maxAttempts` times. Each retry fires only after the connectivity manager
+    /// confirms internet is available again.
+    private func openChannelOnChain(ethKP: EthKeyPair, channel: Channel, attempt: Int = 0) async {
+        let maxAttempts = 8
         guard let rpcURL = tempoConfig.rpcURL else { return }
         let wallet = QueueingWalletProvider(keyPair: ethKP, rpc: EthRPC(rpcURL: rpcURL, session: tempoConfig.urlSession))
         // Bug #11b-1: Skip the opener entirely when channel is already confirmed open.
@@ -325,9 +336,21 @@ class SessionManager: ObservableObject {
             os_log("CHANNEL_ALREADY_OPEN=%{public}@", log: smokeLog, type: .default, channelId.ethHexPrefixed)
             print("Channel already exists on-chain")
         case .failed(let reason):
-            channelOnChainStatus = "On-chain failed: \(reason)"
-            os_log("CHANNEL_ONCHAIN_FAILED=%{public}@", log: smokeLog, type: .default, reason)
-            print("On-chain channel opening failed: \(reason)")
+            // "RPC unavailable" = transient network error (iOS hasn't routed to cellular yet).
+            // Re-enqueue so it retries once the cellular path is confirmed stable.
+            if reason.hasPrefix("RPC unavailable"), attempt < maxAttempts, let cm = connectivityManager {
+                let nextAttempt = attempt + 1
+                channelOnChainStatus = "Waiting for internet — retry \(nextAttempt)/\(maxAttempts)..."
+                os_log("CHANNEL_ONCHAIN_RETRY=%{public}d", log: smokeLog, type: .default, nextAttempt)
+                print("Channel open RPC unavailable (attempt \(nextAttempt)/\(maxAttempts)), re-queuing...")
+                cm.enqueuePaymentOperation(label: "Retry channel open (attempt \(nextAttempt))") { [weak self] in
+                    await self?.openChannelOnChain(ethKP: ethKP, channel: channel, attempt: nextAttempt)
+                }
+            } else {
+                channelOnChainStatus = "On-chain failed: \(reason)"
+                os_log("CHANNEL_ONCHAIN_FAILED=%{public}@", log: smokeLog, type: .default, reason)
+                print("On-chain channel opening failed: \(reason)")
+            }
         }
     }
 

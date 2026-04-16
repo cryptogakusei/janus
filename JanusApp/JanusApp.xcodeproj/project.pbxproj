@@ -34,6 +34,7 @@
 		C100000016 /* CompositeTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000017 /* CompositeTransport.swift */; };
 		C100000017 /* JanusWalletKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000018 /* JanusWalletKeychain.swift */; };
 		C100000018 /* PaymentConnectivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000019 /* PaymentConnectivityManager.swift */; };
+		C100000020 /* CellularTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000021 /* CellularTransport.swift */; };
 		C400000009 /* WalletKeychainTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000009 /* WalletKeychainTests.swift */; };
 
 		/* SPM product refs */
@@ -70,6 +71,7 @@
 		A100000017 /* CompositeTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompositeTransport.swift; sourceTree = "<group>"; };
 		A100000018 /* JanusWalletKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusWalletKeychain.swift; sourceTree = "<group>"; };
 		A100000019 /* PaymentConnectivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaymentConnectivityManager.swift; sourceTree = "<group>"; };
+		A100000021 /* CellularTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CellularTransport.swift; sourceTree = "<group>"; };
 		A300000009 /* WalletKeychainTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletKeychainTests.swift; sourceTree = "<group>"; };
 
 		/* JanusProvider source files */
@@ -157,6 +159,7 @@
 				A100000017 /* CompositeTransport.swift */,
 				A100000018 /* JanusWalletKeychain.swift */,
 				A100000019 /* PaymentConnectivityManager.swift */,
+				A100000021 /* CellularTransport.swift */,
 				A100000004 /* Info.plist */,
 			);
 			path = JanusClient;
@@ -338,6 +341,7 @@
 				C100000016 /* CompositeTransport.swift in Sources */,
 				C100000017 /* JanusWalletKeychain.swift in Sources */,
 				C100000018 /* PaymentConnectivityManager.swift in Sources */,
+				C100000020 /* CellularTransport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

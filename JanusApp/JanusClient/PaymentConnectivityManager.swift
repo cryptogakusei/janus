@@ -50,6 +50,24 @@ final class PaymentConnectivityManager: ObservableObject {
         }
     }
 
+    // MARK: - Transport
+
+    /// The HTTP transport to use for payment/blockchain RPC calls.
+    ///
+    /// Returns a `URLSessionTransport` when WiFi has confirmed internet access.
+    /// Returns a `CellularTransport` otherwise — this uses `NWConnection` with
+    /// `requiredInterfaceType = .cellular`, which is the only public iOS API
+    /// that deterministically pins traffic to the cellular modem regardless of
+    /// which interface the system is currently routing through.
+    var internetTransport: any HTTPTransport {
+        switch internetReachability {
+        case .wifiWithInternet:
+            return URLSessionTransport(session: wifiSession)
+        case .cellularOnly, .probing, .unavailable:
+            return CellularTransport()
+        }
+    }
+
     /// WiFi-pinned session — used only for the active probe.
     /// Short timeout: we want fast fallback to cellular.
     private lazy var wifiProbeSession: URLSession = {

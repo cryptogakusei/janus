@@ -18,7 +18,7 @@ public struct ChannelOpener: Sendable {
         guard let url = config.rpcURL else {
             fatalError("ChannelOpener requires a TempoConfig with rpcURL")
         }
-        self.rpc = EthRPC(rpcURL: url, session: config.urlSession)
+        self.rpc = EthRPC(rpcURL: url, transport: config.transport)
         self.config = config
     }
 

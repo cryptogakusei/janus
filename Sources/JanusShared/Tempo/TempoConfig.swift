@@ -18,12 +18,18 @@ public struct TempoConfig: Sendable {
     /// The JSON-RPC endpoint URL (optional — nil for off-chain-only mode).
     public let rpcURL: URL?
 
-    /// The URLSession used for all RPC calls.
+    /// The URLSession used for all RPC calls (legacy; `transport` is authoritative).
     ///
-    /// Defaults to `.shared`. Inject a connectivity-aware session (e.g. from
-    /// `PaymentConnectivityManager`) to route blockchain calls over cellular
-    /// when the active WiFi has no WAN uplink.
+    /// Kept for backward compatibility with `LocalWalletProvider` and the legacy
+    /// `ChannelOpener.openChannel(keyPair:channel:)` path. New code should use `transport`.
     public let urlSession: URLSession
+
+    /// The HTTP transport used by `EthRPC` for all blockchain RPC calls.
+    ///
+    /// Defaults to a `URLSessionTransport` wrapping `urlSession`.
+    /// iOS clients inject `CellularTransport` via `PaymentConnectivityManager.internetTransport`
+    /// so payment traffic is deterministically routed over cellular when WiFi has no WAN uplink.
+    public let transport: any HTTPTransport
 
     /// The EIP-712 domain for voucher signing.
     public var voucherDomain: EIP712.Domain {
@@ -35,6 +41,7 @@ public struct TempoConfig: Sendable {
         )
     }
 
+    /// Create with a URLSession (backward-compatible convenience init).
     public init(escrowContract: EthAddress, paymentToken: EthAddress, chainId: UInt64,
                 rpcURL: URL? = nil, urlSession: URLSession = .shared) {
         self.escrowContract = escrowContract
@@ -42,6 +49,18 @@ public struct TempoConfig: Sendable {
         self.chainId = chainId
         self.rpcURL = rpcURL
         self.urlSession = urlSession
+        self.transport = URLSessionTransport(session: urlSession)
+    }
+
+    /// Create with an explicit HTTP transport (e.g. `CellularTransport` on iOS).
+    public init(escrowContract: EthAddress, paymentToken: EthAddress, chainId: UInt64,
+                rpcURL: URL? = nil, transport: any HTTPTransport) {
+        self.escrowContract = escrowContract
+        self.paymentToken = paymentToken
+        self.chainId = chainId
+        self.rpcURL = rpcURL
+        self.urlSession = .shared  // legacy compat; transport is authoritative
+        self.transport = transport
     }
 }
 
