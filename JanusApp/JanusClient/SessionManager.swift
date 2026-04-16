@@ -42,7 +42,32 @@ class SessionManager: ObservableObject {
         guard let ch = channel else { return nil }
         return ChannelInfo(channel: ch, config: tempoConfig, clientCumulativeSpend: spendState.cumulativeSpend)
     }
-    private let tempoConfig = TempoConfig.testnet
+
+    /// Connectivity manager — vends the URLSession to use for blockchain RPC calls.
+    /// Weak to avoid a reference cycle (ClientEngine owns both SessionManager and the manager).
+    private weak var connectivityManager: PaymentConnectivityManager?
+
+    /// Builds a TempoConfig that routes blockchain calls over whichever interface currently
+    /// has confirmed internet access (WiFi-with-WAN first, cellular fallback).
+    /// Called fresh at each on-chain operation so it always reflects the current interface.
+    private var tempoConfig: TempoConfig {
+        let base = TempoConfig.testnet
+        let session = connectivityManager?.internetSession ?? URLSession.shared
+        return TempoConfig(
+            escrowContract: base.escrowContract,
+            paymentToken: base.paymentToken,
+            chainId: base.chainId,
+            rpcURL: base.rpcURL,
+            urlSession: session
+        )
+    }
+
+    /// Wire a connectivity manager so on-chain operations use the correct network interface.
+    /// Must be called before the first `setupTempoChannel` / `retryChannelOpenIfNeeded`.
+    func attachConnectivityManager(_ manager: PaymentConnectivityManager) {
+        connectivityManager = manager
+    }
+
     /// Whether the channel has been successfully opened on-chain.
     @Published var channelOpenedOnChain = false
     /// On-chain channel status.
@@ -213,7 +238,8 @@ class SessionManager: ObservableObject {
 
         // Always use local key as authorizedSigner — works offline.
         signerAddress = ethKP.address
-        self.walletProvider = LocalWalletProvider(keyPair: ethKP, rpcURL: tempoConfig.rpcURL)
+        // walletProvider is used for voucher signing (pure local secp256k1, no RPC needed).
+        self.walletProvider = LocalWalletProvider(keyPair: ethKP)
 
         let sigAddr = ethKP.address.checksumAddress
         os_log("CLIENT_SIGNER_ADDRESS=%{public}@ (local key, offline-capable)", log: smokeLog, type: .default, sigAddr)
@@ -245,14 +271,26 @@ class SessionManager: ObservableObject {
         print("Tempo channel created: \(chIdHex.prefix(18))... deposit=\(ch.deposit)")
         persist()
 
-        // Open channel on-chain using local key (async, non-blocking)
-        let onChainWallet = LocalWalletProvider(keyPair: ethKP, rpcURL: tempoConfig.rpcURL)
-        Task { await openChannelOnChain(wallet: onChainWallet, channel: ch) }
+        // Open channel on-chain — deferred via connectivity queue so it runs when internet is
+        // available (handles the offline-mesh-only scenario: mesh for inference, cellular for txs).
+        let ethKPCapture = ethKP
+        let chCapture = ch
+        if let cm = connectivityManager {
+            cm.enqueuePaymentOperation(label: "Open channel on-chain") { [weak self] in
+                await self?.openChannelOnChain(ethKP: ethKPCapture, channel: chCapture)
+            }
+        } else {
+            Task { await openChannelOnChain(ethKP: ethKPCapture, channel: chCapture) }
+        }
     }
 
-    /// Open the payment channel on-chain using the wallet provider.
-    private func openChannelOnChain(wallet: any WalletProvider, channel: Channel) async {
-        guard tempoConfig.rpcURL != nil else { return }
+    /// Open the payment channel on-chain.
+    ///
+    /// Constructs a `QueueingWalletProvider` using the *current* `tempoConfig.urlSession`
+    /// at invocation time, so the RPC call routes over whichever interface has internet.
+    private func openChannelOnChain(ethKP: EthKeyPair, channel: Channel) async {
+        guard let rpcURL = tempoConfig.rpcURL else { return }
+        let wallet = QueueingWalletProvider(keyPair: ethKP, rpc: EthRPC(rpcURL: rpcURL, session: tempoConfig.urlSession))
         // Bug #11b-1: Skip the opener entirely when channel is already confirmed open.
         // ChannelOpener uses try? on its pre-existence RPC check — if the RPC call fails,
         // it proceeds to send open() which reverts because the channel already exists.
@@ -300,11 +338,15 @@ class SessionManager: ObservableObject {
 
     /// Retry opening the channel on-chain if a previous attempt failed or was interrupted.
     func retryChannelOpenIfNeeded() {
-        guard let ethKP = ethKeyPair, channel != nil, !channelOpenedOnChain else { return }
-        let onChainWallet = LocalWalletProvider(keyPair: ethKP, rpcURL: tempoConfig.rpcURL)
-        guard let ch = channel else { return }
+        guard let ethKP = ethKeyPair, let ch = channel, !channelOpenedOnChain else { return }
         print("Retrying channel open on-chain...")
-        Task { await openChannelOnChain(wallet: onChainWallet, channel: ch) }
+        if let cm = connectivityManager {
+            cm.enqueuePaymentOperation(label: "Retry channel open on-chain") { [weak self] in
+                await self?.openChannelOnChain(ethKP: ethKP, channel: ch)
+            }
+        } else {
+            Task { await openChannelOnChain(ethKP: ethKP, channel: ch) }
+        }
     }
 
     /// Create a signed VoucherAuthorization for the given quote (Tempo path).
@@ -437,11 +479,14 @@ class SessionManager: ObservableObject {
     /// Top up the active payment channel by sending additional tokens to escrow.
     func topUpChannel(additionalDeposit: UInt64) async {
         guard let channel = self.channel,
-              let wallet = self.walletProvider else {
+              let ethKP = self.ethKeyPair,
+              let rpcURL = tempoConfig.rpcURL else {
             channelOnChainStatus = "Top-up failed: no active channel"
             return
         }
         channelOnChainStatus = "Topping up..."
+        // Construct wallet with current session so the tx routes over the correct interface.
+        let wallet = QueueingWalletProvider(keyPair: ethKP, rpc: EthRPC(rpcURL: rpcURL, session: tempoConfig.urlSession))
         let topUpService = ChannelTopUp(config: tempoConfig)
         let result = await topUpService.topUp(
             wallet: wallet,

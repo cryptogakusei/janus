@@ -18,6 +18,13 @@ public struct TempoConfig: Sendable {
     /// The JSON-RPC endpoint URL (optional — nil for off-chain-only mode).
     public let rpcURL: URL?
 
+    /// The URLSession used for all RPC calls.
+    ///
+    /// Defaults to `.shared`. Inject a connectivity-aware session (e.g. from
+    /// `PaymentConnectivityManager`) to route blockchain calls over cellular
+    /// when the active WiFi has no WAN uplink.
+    public let urlSession: URLSession
+
     /// The EIP-712 domain for voucher signing.
     public var voucherDomain: EIP712.Domain {
         EIP712.Domain(
@@ -28,11 +35,13 @@ public struct TempoConfig: Sendable {
         )
     }
 
-    public init(escrowContract: EthAddress, paymentToken: EthAddress, chainId: UInt64, rpcURL: URL? = nil) {
+    public init(escrowContract: EthAddress, paymentToken: EthAddress, chainId: UInt64,
+                rpcURL: URL? = nil, urlSession: URLSession = .shared) {
         self.escrowContract = escrowContract
         self.paymentToken = paymentToken
         self.chainId = chainId
         self.rpcURL = rpcURL
+        self.urlSession = urlSession
     }
 }
 

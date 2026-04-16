@@ -142,6 +142,67 @@ This is safe because `@MainActor` guarantees the read-modify-write is atomic (no
 
 **Files to change when fixing**: `JanusApp/JanusProvider/ProviderEngine.swift` — `handlePromptRequest()`, the `currentTab` capture and `newTab` assignment post-`await mlxRunner.generate`.
 
+### Phase 0 GL-iNET Opal Router Test — Multi-Provider Discovery + MPC Roaming
+
+**Date:** 2026-04-15  
+**Setup:** GL-iNET Opal travel router (no internet), MacBook Pro (original WiFi, internet-connected), MacBook Air (Opal WiFi), two iPhones (Opal WiFi). MacBook Air running `JanusProvider` on `feature/13d-tab-payment`.
+
+#### Objective
+
+Verify that multiple simultaneous providers are discoverable by multiple clients on the same local subnet, without any code changes. No relay involved — pure Bonjour/TCP + MPC transport test.
+
+#### Results
+
+**1. Multi-provider discovery — confirmed.**
+
+Both providers appeared independently in the client discovery list (identified by their Mac hostnames). Each client can select either provider and submit inference requests independently. Connecting to one provider has no effect on other clients or the other provider. This validates the multi-session `CompositeAdvertiser` architecture and the per-provider `NWConnection` isolation in `BonjourBrowser`.
+
+**2. MPC sessions survive network topology change — unexpected finding.**
+
+After establishing sessions with the MacBook Pro (original WiFi), both iPhones were moved to the Opal network (different subnet, no internet). The existing MPC sessions to the MacBook Pro remained live and continued to serve successful inference requests — even though:
+- The MacBook Pro was on a completely different WiFi network
+- The Opal network had no internet connection
+- The two networks share no infrastructure
+
+**Mechanism:** Apple's `MultipeerConnectivity` framework automatically negotiates transport across three layers: WiFi infrastructure (same subnet), WiFi Direct (peer-to-peer, no router, ~200m range), and Bluetooth (~10m range). When the infrastructure WiFi path broke, MPC silently promoted the connection to either WiFi Direct or Bluetooth. The framework does not expose which transport is active — the application sees a continuous session with no interruption.
+
+**3. Offline payment — confirmed for existing channels.**
+
+Tab settlement continued to work on the Opal-connected MacBook Air with no internet: voucher signing is pure local ECDSA over the `PersistedClientSession` channel state. No network call is required until on-chain settlement. The payment layer was already designed for this; the transport resilience was not.
+
+**4. Credit top-up blocked — expected.**
+
+Clients on the offline Opal network could not increase their channel deposit. Opening new channels also requires an on-chain transaction. This is the correct behavior — pre-funded channels work indefinitely offline; the blockchain is only touched at channel open/close/top-up.
+
+#### Emergent Architectural Insight: MPC Roaming
+
+The combination of MPC session persistence and offline-capable tab payments creates a stronger offline guarantee than was designed for:
+
+| Capability | Designed for offline? | Actually works offline? |
+|---|---|---|
+| Tab voucher signing | ✅ Yes | ✅ Yes |
+| Inference to pre-connected provider | ❌ Not explicitly | ✅ Yes (MPC transport fallback) |
+| Provider discovery (new sessions) | ❌ No | ❌ No (mDNS is subnet-local) |
+| Channel top-up | ❌ No | ❌ No (on-chain tx required) |
+| On-chain settlement | ❌ No | ❌ No (on-chain tx required) |
+
+**Implication for relay design (#13e / Phase 1):** The relay's job was assumed to be bridging clients to providers across networks. For clients that have already established a session, MPC already does this for free at the transport layer within its transport range (WiFi Direct ~200m, Bluetooth ~10m). But relays are not made redundant by this — they serve a complementary role: **extending mesh range beyond what MPC transports can reach**. A relay node placed between two MPC islands (e.g. between buildings, or between village clusters) can forward traffic between clients and providers that are out of direct MPC range. This also enables non-Apple platforms to participate. The revised framing: MPC handles short-range continuity for free; relays handle long-range bridging and cross-platform reach.
+
+**Practical deployment pattern (village scenario):**
+1. Client connects to provider's WiFi hotspot → Bonjour discovers provider → MPC session established → channel opened on-chain (requires internet, done once)
+2. Client walks away, rejoins their own home network or is offline entirely
+3. **Within MPC range (~200m WiFi Direct, ~10m Bluetooth):** MPC falls back silently — inference continues with no code changes
+4. **Beyond MPC range:** A relay node (e.g. a Raspberry Pi, GL-iNET router, or another phone) placed between client and provider extends the mesh, forwarding Janus protocol messages between MPC islands
+5. Client returns to provider WiFi (or reaches a relay with internet access) only when topping up credits (on-chain tx)
+
+The mesh topology is therefore: **Bluetooth → WiFi Direct → relay chain → provider**, with each hop extending range. MPC handles the near-field automatically; relays handle the far-field explicitly. This is a stronger offline story than the design assumed, and clarifies that relays extend rather than replace MPC transport.
+
+#### Bug Fixed During Setup
+
+`Sources/JanusShared/Protocol/ServiceUpdate.swift` was accidentally left untracked in the working tree and never committed to `feature/13d-tab-payment`. The MacBook Air's clean checkout failed with `cannot find 'ServiceUpdate' in scope` at `ProviderEngine.swift:921`. Fixed by staging and pushing the missing file (commit `9e5fda8`).
+
+---
+
 ### Roadmap #13d-T1: Tab payment model unit tests (PENDING)
 
 Phase 7 of the #13d plan — deferred to a future session. All production code is complete and manually verified. These tests cover correctness of the tab accounting logic in isolation.
@@ -165,6 +226,79 @@ Phase 7 of the #13d plan — deferred to a future session. All production code i
 - `JanusApp/JanusClientTests/ClientEngineTests.swift`: remove 2 stale quote tests; add `testHandleTabSettlementRequest_autoApproves()` and fraud-check update
 
 **Verification:** `xcodebuild test -scheme Janus-Package` should go from 206 → ~228 tests, 0 failures.
+
+---
+
+## 2026-04-16
+
+### Network Interface Routing Design: Inference vs Payment
+
+Validated empirically: when an iPhone is connected to an offline mesh WiFi (Opal with no WAN), iOS does **not** automatically fall back to cellular for internet-bound calls (WiFi Assist only kicks in when WiFi is degraded, not when it has no WAN uplink). Payment/channel calls failed even with cellular available. Code change required to explicitly route blockchain operations over cellular.
+
+#### Confirmed State Machine
+
+| Operation | Transport | Interface | Cellular allowed? | Queued if unavailable? |
+|---|---|---|---|---|
+| Inference request | Bonjour/TCP | WiFi only (mesh) | ❌ Never | ❌ No — provider unreachable |
+| Inference request | MPC | WiFi Direct / Bluetooth | ❌ Impossible by design | ❌ No — provider unreachable |
+| Tab voucher signing | Local ECDSA | None (CPU only) | N/A | N/A |
+| Tab voucher delivery | Same as inference | WiFi / WiFi Direct / BT | ❌ Never | ❌ No — piggybacks inference session |
+| Channel open | Lightning SDK | WiFi-with-internet → cellular | ✅ Yes (fallback) | ✅ Yes — retry when internet returns |
+| Channel top-up | Lightning SDK | WiFi-with-internet → cellular | ✅ Yes (fallback) | ✅ Yes — retry when internet returns |
+| On-chain settlement | Lightning SDK | WiFi-with-internet → cellular | ✅ Yes (fallback) | ✅ Yes — retry when internet returns |
+| Deferred settlement flush | Lightning SDK | WiFi-with-internet → cellular | ✅ Yes (fallback) | ✅ Yes — triggered by connectivity change |
+
+**Summary rule:**
+- **Anything Janus protocol** → WiFi/BT only, cellular never touches it
+- **Anything blockchain** → internet-seeking, cellular is the fallback, queued if neither available
+
+#### Implementation Required
+
+**Inference connections** (`ClientEngine` — Bonjour/TCP path):
+```swift
+let params = NWParameters.tcp
+params.requiredInterfaceType = .wifi
+params.prohibitedInterfaceTypes = [.cellular]
+```
+MPC inference needs no change — MPC is architecturally peer-to-peer only and cannot use cellular.
+
+**Payment/channel connections** (`ClientEngine` — Lightning/blockchain path):
+Use `NWPathMonitor` per interface to detect which has internet, then bind connections accordingly:
+```swift
+// Maintain two path monitors
+let wifiMonitor = NWPathMonitor(requiredInterfaceType: .wifi)
+let cellularMonitor = NWPathMonitor(requiredInterfaceType: .cellular)
+
+// When making payment call — pick internet-capable interface
+func paymentConnectionParams() -> NWParameters {
+    let params = NWParameters.tcp
+    if wifiHasInternet {
+        params.requiredInterfaceType = .wifi
+    } else if cellularHasInternet {
+        params.requiredInterfaceType = .cellular
+    }
+    // else: queue for retry
+    return params
+}
+```
+
+**Deferred settlement trigger:**
+```swift
+// In ClientEngine — flush queued settlements when internet returns
+monitor.pathUpdateHandler = { path in
+    if path.status == .satisfied {
+        settlePendingTabs()
+    }
+}
+```
+
+**Scope:** ~50-80 lines in `ClientEngine`. New `PaymentConnectivityManager` type that owns the two `NWPathMonitor` instances and vends correct `NWParameters` to the Lightning layer.
+
+**Why cellular prohibition on inference matters beyond correctness:** Inference responses are several KB per request. Accidentally routing over cellular in a village where mobile data is expensive would be a serious UX and cost failure. The explicit prohibition is a hard safety guarantee.
+
+#### Roadmap Item
+
+This is a prerequisite for production village deployment — without it, payment calls silently fail when on an offline mesh. Track as roadmap item **#14a: Interface-aware connection routing**.
 
 ---
 

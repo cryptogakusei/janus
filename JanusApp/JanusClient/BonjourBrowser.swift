@@ -48,6 +48,8 @@ class BonjourBrowser: NSObject, ObservableObject, ProviderTransport {
 
     /// Reconnect backoff tracking.
     private var reconnectTasks: [NWEndpoint: Task<Void, Never>] = [:]
+    /// Reconnect attempt counts for exponential backoff, keyed by endpoint.
+    private var reconnectAttempts: [NWEndpoint: Int] = [:]
 
     override init() {
         super.init()
@@ -59,6 +61,7 @@ class BonjourBrowser: NSObject, ObservableObject, ProviderTransport {
 
         let params = NWParameters()
         params.includePeerToPeer = true
+        params.prohibitedInterfaceTypes = [.cellular]   // inference stays on WiFi/mesh only
 
         let browser = NWBrowser(for: .bonjour(type: serviceType, domain: nil), using: params)
 
@@ -197,6 +200,7 @@ class BonjourBrowser: NSObject, ObservableObject, ProviderTransport {
 
         let params = NWParameters(tls: nil, tcp: tcpOptions)
         params.includePeerToPeer = true
+        params.prohibitedInterfaceTypes = [.cellular]   // inference stays on WiFi/mesh only
 
         let connection = NWConnection(to: endpoint, using: params)
         endpointConnections[endpoint] = connection
@@ -223,9 +227,10 @@ class BonjourBrowser: NSObject, ObservableObject, ProviderTransport {
                 switch state {
                 case .ready:
                     print("[BonjourBrowser] Connected to endpoint")
-                    // Cancel any pending reconnect
+                    // Cancel any pending reconnect and reset backoff
                     self.reconnectTasks[endpoint]?.cancel()
                     self.reconnectTasks.removeValue(forKey: endpoint)
+                    self.reconnectAttempts.removeValue(forKey: endpoint)
                 case .failed(let error):
                     print("[BonjourBrowser] Connection failed: \(error)")
                     self.disconnectEndpoint(endpoint)
@@ -342,13 +347,17 @@ class BonjourBrowser: NSObject, ObservableObject, ProviderTransport {
         }
     }
 
-    /// Auto-reconnect with exponential backoff.
+    /// Auto-reconnect with exponential backoff (2s, 4s, 8s … capped at 60s).
     private func scheduleReconnect(_ endpoint: NWEndpoint) {
         guard isSearching else { return }
         reconnectTasks[endpoint]?.cancel()
 
+        let attempt = reconnectAttempts[endpoint, default: 0]
+        reconnectAttempts[endpoint] = attempt + 1
+        let delay = min(2.0 * pow(2.0, Double(attempt)), 60.0)
+
         reconnectTasks[endpoint] = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled, self.isSearching else { return }
             self.connectToEndpoint(endpoint)
         }

@@ -8,9 +8,11 @@ import Foundation
 public struct EthRPC: Sendable {
 
     public let rpcURL: URL
+    private let session: URLSession
 
-    public init(rpcURL: URL) {
+    public init(rpcURL: URL, session: URLSession = .shared) {
         self.rpcURL = rpcURL
+        self.session = session
     }
 
     /// Call a contract function (eth_call) and return the raw hex result.
@@ -105,7 +107,7 @@ public struct EthRPC: Sendable {
         request.httpBody = jsonData
         request.timeoutInterval = 15
 
-        let (responseData, response) = try await URLSession.shared.data(for: request)
+        let (responseData, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw RPCError.httpError
         }

@@ -17,7 +17,7 @@ public struct ChannelSettler: Sendable {
         guard let url = config.rpcURL else {
             fatalError("ChannelSettler requires a TempoConfig with rpcURL")
         }
-        self.rpc = EthRPC(rpcURL: url)
+        self.rpc = EthRPC(rpcURL: url, session: config.urlSession)
         self.config = config
     }
 

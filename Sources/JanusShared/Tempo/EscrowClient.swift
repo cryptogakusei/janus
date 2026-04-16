@@ -18,7 +18,7 @@ public struct EscrowClient: Sendable {
     }
 
     public init(config: TempoConfig) {
-        self.rpc = EthRPC(rpcURL: config.rpcURL!)
+        self.rpc = EthRPC(rpcURL: config.rpcURL!, session: config.urlSession)
         self.escrowAddress = config.escrowContract
     }
 

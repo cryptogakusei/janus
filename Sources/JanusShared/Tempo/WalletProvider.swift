@@ -38,9 +38,9 @@ public struct LocalWalletProvider: WalletProvider {
 
     /// Create with a keypair and optional RPC for transaction sending.
     /// If rpc is nil, `sendTransaction` will throw.
-    public init(keyPair: EthKeyPair, rpcURL: URL? = nil) {
+    public init(keyPair: EthKeyPair, rpcURL: URL? = nil, urlSession: URLSession = .shared) {
         self.keyPair = keyPair
-        self.rpc = rpcURL.map { EthRPC(rpcURL: $0) }
+        self.rpc = rpcURL.map { EthRPC(rpcURL: $0, session: urlSession) }
     }
 
     public func signVoucher(_ voucher: Voucher, config: TempoConfig) async throws -> SignedVoucher {

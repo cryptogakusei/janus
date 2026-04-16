@@ -56,6 +56,10 @@ class ClientEngine: ObservableObject {
     let compositeRef: CompositeTransport?
     private(set) var sessionManager: SessionManager?
     private var cancellables = Set<AnyCancellable>()
+
+    /// Monitors network interfaces and vends the URLSession for blockchain RPC calls.
+    /// Inference traffic is unaffected — it stays on the transport (WiFi/mesh/BT).
+    let connectivityManager = PaymentConnectivityManager()
     var pendingRequestID: String?
     var pendingTaskType: TaskType?
     var pendingPromptText: String?
@@ -141,6 +145,8 @@ class ClientEngine: ObservableObject {
                 self?.handleMessage(envelope)
             }
         }
+
+        connectivityManager.startMonitoring()
     }
 
     /// Switch to a different provider.
@@ -165,6 +171,7 @@ class ClientEngine: ObservableObject {
 
     func stopSearching() {
         transport.stopSearching()
+        connectivityManager.stopMonitoring()
     }
 
     /// Create or restore a session for the connected provider.
@@ -178,6 +185,7 @@ class ClientEngine: ObservableObject {
 
         if let restored = SessionManager.restore(providerID: providerID) {
             sessionManager = restored
+            restored.attachConnectivityManager(connectivityManager)
             responseHistory = restored.history
             if restored.channelOpenedOnChain {
                 // Channel already verified on a previous session.
@@ -211,6 +219,7 @@ class ClientEngine: ObservableObject {
                     return
                 }
                 sessionManager = manager
+                manager.attachConnectivityManager(connectivityManager)
                 bindChannelStatus(to: manager)
                 if let ethAddr = connectedProvider?.providerEthAddress, !ethAddr.isEmpty {
                     // Gate sessionReady on channel confirmation

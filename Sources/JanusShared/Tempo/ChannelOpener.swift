@@ -18,7 +18,7 @@ public struct ChannelOpener: Sendable {
         guard let url = config.rpcURL else {
             fatalError("ChannelOpener requires a TempoConfig with rpcURL")
         }
-        self.rpc = EthRPC(rpcURL: url)
+        self.rpc = EthRPC(rpcURL: url, session: config.urlSession)
         self.config = config
     }
 
@@ -114,7 +114,7 @@ public struct ChannelOpener: Sendable {
 
     /// Legacy overload for direct EthKeyPair usage.
     public func openChannel(keyPair: EthKeyPair, channel: Channel) async -> OpenResult {
-        let wallet = LocalWalletProvider(keyPair: keyPair, rpcURL: config.rpcURL)
+        let wallet = LocalWalletProvider(keyPair: keyPair, rpcURL: config.rpcURL, urlSession: config.urlSession)
         return await openChannel(wallet: wallet, channel: channel)
     }
 }
