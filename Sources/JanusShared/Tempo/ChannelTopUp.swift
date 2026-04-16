@@ -13,7 +13,7 @@ public struct ChannelTopUp: Sendable {
         guard let url = config.rpcURL else {
             fatalError("ChannelTopUp requires a TempoConfig with rpcURL")
         }
-        self.rpc = EthRPC(rpcURL: url, session: config.urlSession)
+        self.rpc = EthRPC(rpcURL: url, transport: config.transport)
         self.config = config
     }
 
