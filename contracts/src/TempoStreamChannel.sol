@@ -13,7 +13,7 @@ import {TempoUtilities} from "./TempoUtilities.sol";
 ///      Spec: https://paymentauth.tempo.xyz/draft-tempo-stream-00
 contract TempoStreamChannel is ITempoStreamChannel, EIP712 {
     /// @notice The grace period (in seconds) after a close is requested before the payer can withdraw.
-    uint64 public constant CLOSE_GRACE_PERIOD = 15 minutes;
+    uint64 public constant CLOSE_GRACE_PERIOD = 24 hours;
 
     /// @notice The EIP-712 typehash for the Voucher struct.
     bytes32 public constant VOUCHER_TYPEHASH = keccak256("Voucher(bytes32 channelId,uint128 cumulativeAmount)");

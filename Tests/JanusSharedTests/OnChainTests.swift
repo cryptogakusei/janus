@@ -164,7 +164,7 @@ final class OnChainTests: XCTestCase {
     func testTempoConfigTestnetValues() {
         let config = TempoConfig.testnet
         XCTAssertEqual(config.chainId, 42431)
-        XCTAssertEqual(config.escrowContract.checksumAddress, "0xaB7409f3ea73952FC8C762ce7F01F245314920d9")
+        XCTAssertEqual(config.escrowContract.checksumAddress, "0x50bb629A22DBeA358238806D6D8c899c8c73Ad2e")
         XCTAssertEqual(config.paymentToken.checksumAddress, "0x20C0000000000000000000000000000000000000")
         XCTAssertNotNil(config.rpcURL)
         XCTAssertEqual(config.rpcURL?.absoluteString, "https://rpc.moderato.tempo.xyz")

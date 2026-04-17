@@ -70,11 +70,11 @@ public extension TempoConfig {
     /// Tempo Moderato testnet.
     ///
     /// - Chain ID: 42431
-    /// - Escrow: TempoStreamChannel deployed at 0xaB7409f3ea73952FC8C762ce7F01F245314920d9
+    /// - Escrow: TempoStreamChannel deployed at 0x50bb629A22DBeA358238806D6D8c899c8c73Ad2e (CLOSE_GRACE_PERIOD = 24h)
     /// - Token: pathUSD at 0x20C0000000000000000000000000000000000000
     /// - RPC: https://rpc.moderato.tempo.xyz
     static let testnet = TempoConfig(
-        escrowContract: try! EthAddress(hex: "0xaB7409f3ea73952FC8C762ce7F01F245314920d9"),
+        escrowContract: try! EthAddress(hex: "0x50bb629A22DBeA358238806D6D8c899c8c73Ad2e"),
         paymentToken: try! EthAddress(hex: "0x20C0000000000000000000000000000000000000"),
         chainId: 42431,
         rpcURL: URL(string: "https://rpc.moderato.tempo.xyz")
