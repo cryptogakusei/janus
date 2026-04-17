@@ -364,6 +364,10 @@ class ProviderEngine: ObservableObject {
                 guard let self else { return }
                 let pending = self.pendingSettlementCredits
                 guard pending > 0 else { continue }
+                guard self.lastPathStatus == .satisfied else {
+                    print("Periodic settlement deferred: network unavailable (\(pending) credits pending)")
+                    continue  // NWPathMonitor will trigger retry when internet returns
+                }
                 print("Periodic settlement triggered: \(pending) credits pending")
                 await self.settleAllChannelsOnChain(isRetry: true, removeAfterSettlement: false)
             }
@@ -591,9 +595,17 @@ class ProviderEngine: ObservableObject {
 
             // Only hit the RPC for new or changed channels — known channels skip the network call
             // to avoid the 15-second RPC timeout blocking inference on every offline request.
+            // After a provider restart, settled channels are no longer in `channels` but are in
+            // `settledChannelAmounts` — short-circuit to .rpcUnavailable for those too, but still
+            // run the fast local verifyChannelInfo() checks (payee match + channelId integrity).
             let result: ChannelVerificationResult
             if channelChanged {
-                result = await vv.verifyChannelInfoOnChain(info)
+                let channelIdHex = info.channelId.ethHexPrefixed
+                if settledChannelAmounts[channelIdHex] != nil, vv.verifyChannelInfo(info) {
+                    result = .rpcUnavailable  // previously settled; skip RPC, local checks passed
+                } else {
+                    result = await vv.verifyChannelInfoOnChain(info)
+                }
             } else {
                 result = .rpcUnavailable  // channel already known; treat as offline-accepted
             }
@@ -848,6 +860,10 @@ class ProviderEngine: ObservableObject {
             let breakdown = channels.filter { $0.value.unsettledAmount > 0 }
                 .map { "\($0.key.prefix(8))...=\($0.value.unsettledAmount)" }
                 .joined(separator: ", ")
+            guard lastPathStatus == .satisfied else {
+                print("Threshold settlement deferred: network unavailable (\(pending) credits pending) [\(breakdown)]")
+                return  // NWPathMonitor will trigger retry when internet returns
+            }
             print("Threshold settlement triggered: \(pending) >= \(settlementThreshold) [\(breakdown)]")
             Task { await settleAllChannelsOnChain(isRetry: true, removeAfterSettlement: false) }
         }

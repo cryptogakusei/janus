@@ -2812,3 +2812,78 @@ Net: 611 lines deleted, 40 added.
 #### Verification
 
 All three targets (Mac provider + Soubhik's iPhone + Madhuri's iPhone) deployed. End-to-end: discovery, channel open, inference, top-up all confirmed working with no login screen.
+
+---
+
+## 2026-04-17
+
+### Feature #15b: Remove Session TTL + Dedicated History File
+
+Fixes the root cause of history and credits being wiped after 1+ hours of inactivity. Both invariants — conversation history and remaining channel credits — now survive indefinitely across app restarts, background/foreground cycles, and session renewal.
+
+#### Why
+
+`PersistedClientSession.isValid` checked `sessionGrant.expiresAt > Date()`. Sessions were granted with a 1-hour TTL. Any app open after an hour hit `restore() → nil`, opened a fresh session, and reset credits + history to zero. The TTL was a leftover from an earlier design where sessions had server-side expiry; in the current local peer-to-peer model it served no purpose.
+
+#### Root Cause of Test Failure (Diagnosis)
+
+After initial deployment, `restore()` still appeared to reset state. Root cause: the previous `xcodebuild build` used Xcode's incremental compiler, which did not recompile `SessionManager.swift` — the installed binary was stale and still ran the old `persist()` that embedded history in the session file. A `xcodebuild clean` + fresh build resolved it. Confirmed by pulling the app container via `xcrun devicectl device copy from` and inspecting JSON files directly.
+
+#### What Changed
+
+**TTL removal:** Removed `persisted.isValid,` from the `guard` in `restore()`. Added `@available(*, deprecated)` to `isValid` to discourage future callers.
+
+**Dedicated history file:** History is now stored in `history_{providerID}.json`, completely decoupled from session state. `persist()` always writes `history: []`; `recordHistory()` calls the new `persistHistory()` which writes only the history file.
+
+**Session grant expiry:** New sessions use `Date(timeIntervalSince1970: 4_070_908_800)` (2099-01-01 UTC) as `expiresAt` — explicit far-future constant rather than a TTL calculation.
+
+**Migration:** On first launch after upgrade, `init(persisted:)` detects embedded history in the old session file and migrates it to `history_{providerID}.json` (idempotent, non-destructive).
+
+**Session renewal continuity:** `init(keyPair:grant:)` (new session path) loads any pre-existing `history_{providerID}.json` before calling `persist()`, so history survives credit exhaustion / channel re-open.
+
+**Clear resets both files:** `clearPersistedSession()` now deletes both `client_session_{providerID}.json` and `history_{providerID}.json`.
+
+#### Files Changed
+
+| File | Change |
+|------|--------|
+| `Sources/JanusShared/Persistence/SessionStore.swift` | New `PersistedHistory` struct; `isValid` deprecated |
+| `JanusApp/JanusClient/SessionManager.swift` | TTL guard removed; dedicated history file; migration; 2099 expiry constant; `persistHistory()` method |
+| `JanusApp/JanusClient/ClientEngine.swift` | Load history from `manager.history` on restore |
+| `Tests/JanusSharedTests/PersistenceTests.swift` | `@available(*, deprecated)` on two TTL tests |
+| `Tests/JanusSharedTests/SessionPersistenceRegressionTests.swift` | 4 new #15b regression tests |
+| `JanusApp/JanusClientTests/SessionHistoryTests.swift` | NEW — 4 behavioral invariant tests |
+| `JanusApp/JanusApp.xcodeproj/project.pbxproj` | Added `SessionHistoryTests.swift` to test target |
+
+#### Tests
+
+210/210 shared tests passing. 4 new `SessionHistoryTests` covering:
+1. `testRestore_succeeds_forExpiredSession` — TTL removal regression guard
+2. `testRestore_migratesEmbeddedHistory_toHistoryFile` — upgrade migration
+3. `testCreate_loadsPreExistingHistoryFile` — session renewal continuity
+4. `testClearPersistedSession_deletesBothFiles` — manual reset cleanup
+
+#### Verification
+
+Both iPhones (Soubhik's iPhone 16 + Madhuri's iPhone 14 Plus) deployed. Confirmed via container inspection (`xcrun devicectl device copy from`):
+- `client_session_prov_*.json` now has `history: []`
+- `history_prov_*.json` created with all migrated entries
+- Credits and history survived past the old 1-hour TTL boundary (tested live on device)
+
+---
+
+## Backlog / Upcoming Features
+
+### Feature #16: Extend Close Grace Period to 24 Hours (PENDING)
+
+**Priority:** P1  
+**Size:** S (one-line contract change + redeployment)  
+**Plan:** `docs/plans/16-close-grace-period-extension.md`
+
+**Problem:** `TempoStreamChannel.sol` has `CLOSE_GRACE_PERIOD = 15 minutes`. A client with internet access can call `requestClose()` while the provider is offline, wait 15 minutes, then call `withdraw()` to drain the entire unsettled deposit. The provider's held vouchers become unenforceable (`ChannelFinalized` revert). Provider served inference and gets paid nothing.
+
+The contract's challenge-response design is correct — `settle()` cancels a pending close request — but 15 minutes is too short for an offline-first architecture where provider devices routinely sleep or lose connectivity.
+
+**Fix:** Change `CLOSE_GRACE_PERIOD` from `15 minutes` to `24 hours` in `TempoStreamChannel.sol` line 16. Requires contract redeployment and updating `TempoConfig.testnet.escrowContract` in Swift.
+
+**Identified:** 2026-04-17, during offline inference scenario review. Independently flagged by both systems-architect and architecture-reviewer.

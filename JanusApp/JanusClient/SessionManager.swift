@@ -128,12 +128,32 @@ class SessionManager: ObservableObject {
         // Try per-provider file first, fall back to legacy single file for migration
         let perProviderFile = filename(for: providerID)
         let legacyFile = "client_session.json"
-        let file = store.load(PersistedClientSession.self, from: perProviderFile) != nil ? perProviderFile : legacyFile
-        guard let persisted = store.load(PersistedClientSession.self, from: file),
-              persisted.sessionGrant.providerID == providerID else {
+        let hasPerProvider = store.load(PersistedClientSession.self, from: perProviderFile) != nil
+        let file = hasPerProvider ? perProviderFile : legacyFile
+        os_log("[restore] providerID=%{public}@ file=%{public}@ hasPerProvider=%{public}@",
+               log: smokeLog, type: .default,
+               String(providerID.prefix(8)), file, String(hasPerProvider))
+        guard let persisted = store.load(PersistedClientSession.self, from: file) else {
+            os_log("[restore] FAIL: session file not found or failed to decode",
+                   log: smokeLog, type: .error)
             return nil
         }
-        return try? SessionManager(persisted: persisted, store: store)
+        guard persisted.sessionGrant.providerID == providerID else {
+            os_log("[restore] FAIL: providerID mismatch — file=%{public}@ expected=%{public}@",
+                   log: smokeLog, type: .error,
+                   String(persisted.sessionGrant.providerID.prefix(8)),
+                   String(providerID.prefix(8)))
+            return nil
+        }
+        guard let manager = try? SessionManager(persisted: persisted, store: store) else {
+            os_log("[restore] FAIL: SessionManager(persisted:) threw during init",
+                   log: smokeLog, type: .error)
+            return nil
+        }
+        os_log("[restore] SUCCESS: %{public}d credits, %{public}d history entries",
+               log: smokeLog, type: .default,
+               manager.remainingCredits, manager.history.count)
+        return manager
     }
 
     /// Restore from persisted state.
