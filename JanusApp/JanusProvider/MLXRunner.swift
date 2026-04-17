@@ -25,14 +25,33 @@ actor MLXRunner {
     }
 
     /// Load the model from Hugging Face Hub (downloads on first run, cached after).
+    /// Falls back to loading directly from the local cache directory if the Hub
+    /// network check fails — this makes restarts work when the device is offline.
     func loadModel(progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }) async throws {
         // loadModelContainer is a free function from MLXLMCommon.
         // Importing MLXLLM registers Qwen3 and other model types with the factory.
-        let container = try await MLXLMCommon.loadModelContainer(
-            id: modelID,
-            progressHandler: progressHandler
-        )
-        self.modelContainer = container
+        do {
+            let container = try await MLXLMCommon.loadModelContainer(
+                id: modelID,
+                progressHandler: progressHandler
+            )
+            self.modelContainer = container
+        } catch {
+            // Hub load failed (e.g. offline at restart, metadata validation error).
+            // If the model is already cached locally, load directly from the directory —
+            // this bypasses all Hub network checks while using the exact same weights.
+            let cacheBase = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            let modelDir = cacheBase.appendingPathComponent("models/\(modelID)")
+            guard FileManager.default.fileExists(atPath: modelDir.path) else {
+                throw error  // not cached — rethrow original error so the UI shows the real failure
+            }
+            print("Hub load failed (\(error.localizedDescription)); falling back to local cache at \(modelDir.path)")
+            let container = try await MLXLMCommon.loadModelContainer(
+                directory: modelDir,
+                progressHandler: progressHandler
+            )
+            self.modelContainer = container
+        }
     }
 
     /// Run a single inference request.
