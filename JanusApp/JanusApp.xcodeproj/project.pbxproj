@@ -36,6 +36,7 @@
 		C100000018 /* PaymentConnectivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000019 /* PaymentConnectivityManager.swift */; };
 		C100000020 /* CellularTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000021 /* CellularTransport.swift */; };
 		C400000009 /* WalletKeychainTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000009 /* WalletKeychainTests.swift */; };
+		C400000010 /* SessionHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A300000010 /* SessionHistoryTests.swift */; };
 
 		/* SPM product refs */
 		C300000001 /* JanusShared in Frameworks */ = {isa = PBXBuildFile; productRef = D100000001 /* JanusShared */; };
@@ -73,6 +74,7 @@
 		A100000019 /* PaymentConnectivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaymentConnectivityManager.swift; sourceTree = "<group>"; };
 		A100000021 /* CellularTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CellularTransport.swift; sourceTree = "<group>"; };
 		A300000009 /* WalletKeychainTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletKeychainTests.swift; sourceTree = "<group>"; };
+		A300000010 /* SessionHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionHistoryTests.swift; sourceTree = "<group>"; };
 
 		/* JanusProvider source files */
 		A200000001 /* JanusProviderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusProviderApp.swift; sourceTree = "<group>"; };
@@ -204,6 +206,7 @@
 				A300000007 /* BonjourTransportTests.swift */,
 				A300000008 /* OfflineVoucherTests.swift */,
 				A300000009 /* WalletKeychainTests.swift */,
+				A300000010 /* SessionHistoryTests.swift */,
 			);
 			path = JanusClientTests;
 			sourceTree = "<group>";
@@ -374,6 +377,7 @@
 				C400000007 /* BonjourTransportTests.swift in Sources */,
 				C400000008 /* OfflineVoucherTests.swift in Sources */,
 				C400000009 /* WalletKeychainTests.swift in Sources */,
+				C400000010 /* SessionHistoryTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

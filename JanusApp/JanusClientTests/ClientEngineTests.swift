@@ -82,7 +82,7 @@ final class ClientEngineTests: XCTestCase {
 
         // 100 tokens → expected = max(1, (100*10+999)/1000) = 1 credit
         // Response charges 5 → mismatch
-        let tabUpdate = TabUpdate(tokensUsed: 100, cumulativeTabTokens: 100, tabThreshold: 500)
+        let tabUpdate = TabUpdate(tokensUsed: 100, cumulativeTabTokens: 100, tabThreshold: 500, tokenRate: 10)
         let receipt = makeReceipt(sessionID: "sess-1", requestID: requestID, providerID: "prov-1",
                                   creditsCharged: 5, cumulativeSpend: 5)
         let response = InferenceResponse(requestID: requestID, outputText: "Test",

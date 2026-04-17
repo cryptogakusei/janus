@@ -115,6 +115,11 @@ class SessionManager: ObservableObject {
         "client_session_\(providerID).json"
     }
 
+    /// Per-provider history filename — separate from session state, never expires.
+    private static func historyFilename(for providerID: String) -> String {
+        "history_\(providerID).json"
+    }
+
     /// Stored providerID for determining which file to persist to.
     private let providerID: String
 
@@ -125,7 +130,6 @@ class SessionManager: ObservableObject {
         let legacyFile = "client_session.json"
         let file = store.load(PersistedClientSession.self, from: perProviderFile) != nil ? perProviderFile : legacyFile
         guard let persisted = store.load(PersistedClientSession.self, from: file),
-              persisted.isValid,
               persisted.sessionGrant.providerID == providerID else {
             return nil
         }
@@ -146,7 +150,20 @@ class SessionManager: ObservableObject {
         self.lastChannelDeposit = persisted.lastChannelDeposit
         self.remainingCredits = persisted.remainingCredits
         self.receipts = persisted.receipts
-        self.history = persisted.history
+        // Load history from the dedicated history file.
+        // Migration: if no history file exists yet but the old session file has embedded
+        // history, drain it into the new file (one-time migration on first upgrade launch).
+        let hFilename = Self.historyFilename(for: persisted.sessionGrant.providerID)
+        if let existing = store.load(PersistedHistory.self, from: hFilename) {
+            self.history = existing.entries
+        } else if !persisted.history.isEmpty {
+            // First launch after #15b — migrate embedded history to dedicated file.
+            self.history = persisted.history
+            let ph = PersistedHistory(entries: persisted.history)
+            try? store.save(ph, as: hFilename)
+        } else {
+            self.history = []
+        }
         self.lastChannelId = persisted.lastChannelId
         self.lastVerifiedSettlement = persisted.lastVerifiedSettlement
         // Reset channelOpenedOnChain if the escrow contract address changed since last persist
@@ -187,7 +204,8 @@ class SessionManager: ObservableObject {
         let kp = JanusKeyPair()
         let sessionID = UUID().uuidString
         let maxCredits = 100
-        let expiresAt = Date().addingTimeInterval(3600)
+        // No session TTL — Tempo channel trust is on-chain.
+        let expiresAt = Date(timeIntervalSince1970: 4_070_908_800) // 2099-01-01 UTC
 
         let grant = SessionGrant(
             sessionID: sessionID,
@@ -211,6 +229,11 @@ class SessionManager: ObservableObject {
         self.spendState = SpendState(sessionID: grant.sessionID)
         self.remainingCredits = grant.maxCredits
         self.store = store
+        // Load any pre-existing history for this provider (survives session renewal).
+        if let existing = store.load(PersistedHistory.self,
+                                     from: Self.historyFilename(for: grant.providerID)) {
+            self.history = existing.entries
+        }
         persist()
     }
 
@@ -466,7 +489,7 @@ class SessionManager: ObservableObject {
     /// Record a completed request in history.
     func recordHistory(task: TaskType, prompt: String, response: InferenceResponse) {
         history.insert(HistoryEntry(task: task, prompt: prompt, response: response), at: 0)
-        persist()
+        persistHistory()
     }
 
     /// Verify settlement on-chain by reading the escrow contract directly.
@@ -534,9 +557,12 @@ class SessionManager: ObservableObject {
         }
     }
 
-    /// Clear persisted session (e.g. on session expiry or manual reset).
+    /// Clear persisted session and history (e.g. on manual reset).
+    /// Both files must be deleted together — leaving an orphaned history file would
+    /// cause it to reappear if the user creates a new session with the same providerID.
     func clearPersistedSession() {
         store.delete(Self.filename(for: providerID))
+        store.delete(Self.historyFilename(for: providerID))
     }
 
     // MARK: - Persistence
@@ -547,7 +573,7 @@ class SessionManager: ObservableObject {
             sessionGrant: sessionGrant,
             spendState: spendState,
             receipts: receipts,
-            history: history,
+            history: [],   // history now lives in history_{providerID}.json
             ethPrivateKeyHex: ethKeyPair?.privateKeyData.ethHexPrefixed,
             lastChannelId: lastChannelId,
             lastVerifiedSettlement: lastVerifiedSettlement,
@@ -557,9 +583,21 @@ class SessionManager: ObservableObject {
         )
         do {
             try store.save(state, as: Self.filename(for: providerID))
-            print("Client session persisted: \(remainingCredits) credits, \(history.count) history")
+            print("Client session persisted: \(remainingCredits) credits (history in dedicated file)")
         } catch {
             print("Failed to persist client session: \(error)")
+        }
+    }
+
+    /// Persist conversation history to the dedicated history file.
+    /// Called by recordHistory() — separate from session state so history survives
+    /// session renewal (credit exhaustion, channel re-open, etc.).
+    private func persistHistory() {
+        let ph = PersistedHistory(entries: history)
+        do {
+            try store.save(ph, as: Self.historyFilename(for: providerID))
+        } catch {
+            print("Failed to persist history: \(error)")
         }
     }
 }

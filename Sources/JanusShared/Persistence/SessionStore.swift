@@ -13,6 +13,16 @@ public struct HistoryEntry: Codable, Sendable {
     }
 }
 
+/// Standalone per-provider history file — accumulates across session renewals.
+/// Stored as `history_{providerID}.json`, never expires, never deleted by session logic.
+public struct PersistedHistory: Codable, Sendable {
+    public var entries: [HistoryEntry]
+
+    public init(entries: [HistoryEntry] = []) {
+        self.entries = entries
+    }
+}
+
 /// Persisted client session state — everything needed to resume after app restart.
 public struct PersistedClientSession: Codable, Sendable {
     public let privateKeyBase64: String
@@ -78,6 +88,11 @@ public struct PersistedClientSession: Codable, Sendable {
     }
 
     /// Whether this session is still valid (not expired).
+    ///
+    /// - Note: Deprecated as of #15b. `SessionManager.restore()` no longer gates on
+    ///   this — Tempo sessions do not expire based on wall-clock time. Retained for
+    ///   diagnostic use and backwards test compatibility only.
+    @available(*, deprecated, message: "TTL-based expiry removed in #15b. Do not add new callers.")
     public var isValid: Bool {
         sessionGrant.expiresAt > Date()
     }

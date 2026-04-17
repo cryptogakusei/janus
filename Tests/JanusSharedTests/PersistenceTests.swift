@@ -49,6 +49,7 @@ final class PersistenceTests: XCTestCase {
 
     // MARK: - PersistedClientSession
 
+    @available(*, deprecated) // suppress isValid deprecation — retained for round-trip coverage
     func testClientSessionRoundTrip() throws {
         let kp = JanusKeyPair()
         let grant = SessionGrant(
@@ -94,6 +95,7 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(restoredKP.publicKeyBase64, kp.publicKeyBase64)
     }
 
+    @available(*, deprecated) // isValid arithmetically correct; no longer used in restore()
     func testExpiredSessionIsInvalid() throws {
         let persisted = PersistedClientSession(
             privateKeyBase64: JanusKeyPair().privateKeyBase64,

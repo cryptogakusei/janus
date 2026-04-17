@@ -429,6 +429,87 @@ final class SessionPersistenceRegressionTests: XCTestCase {
         XCTAssertEqual(loaded?.totalCreditsEarned, 50)
     }
 
+    // MARK: - #15b: Dedicated history file
+
+    /// History round-trip: PersistedHistory saves to and loads from `history_{providerID}.json`.
+    func testPersistedHistory_roundTrip() throws {
+        let receipt = makeReceipt(sessionID: "sess-h", requestID: "req-h", creditsCharged: 5, cumulativeSpend: 5)
+        let entries = [
+            HistoryEntry(
+                task: .summarize,
+                prompt: "Summarize this",
+                response: InferenceResponse(
+                    requestID: "req-h", outputText: "Summary",
+                    creditsCharged: 5, cumulativeSpend: 5, receipt: receipt
+                )
+            )
+        ]
+        let ph = PersistedHistory(entries: entries)
+        try store.save(ph, as: "history_prov-h.json")
+        let loaded = store.load(PersistedHistory.self, from: "history_prov-h.json")
+
+        XCTAssertNotNil(loaded)
+        XCTAssertEqual(loaded?.entries.count, 1)
+        XCTAssertEqual(loaded?.entries[0].prompt, "Summarize this")
+        XCTAssertEqual(loaded?.entries[0].response.outputText, "Summary")
+        XCTAssertEqual(loaded?.entries[0].task, .summarize)
+    }
+
+    /// Empty PersistedHistory serializes and deserializes cleanly.
+    func testPersistedHistory_emptyRoundTrip() throws {
+        let ph = PersistedHistory(entries: [])
+        try store.save(ph, as: "history_empty.json")
+        let loaded = store.load(PersistedHistory.self, from: "history_empty.json")
+
+        XCTAssertNotNil(loaded)
+        XCTAssertEqual(loaded?.entries.count, 0)
+    }
+
+    /// After #15b, session files with embedded history decode with history field present
+    /// (for migration) — and session files written by new code contain history: [].
+    func testClientSession_newWriteHasEmptyHistory() throws {
+        let grant = makeGrant(sessionID: "sess-new", providerID: "prov-new")
+        let persisted = PersistedClientSession(
+            privateKeyBase64: JanusKeyPair().privateKeyBase64,
+            sessionGrant: grant,
+            spendState: SpendState(sessionID: "sess-new"),
+            history: []   // new writes always use empty
+        )
+        try store.save(persisted, as: "client_new.json")
+        let loaded = store.load(PersistedClientSession.self, from: "client_new.json")
+
+        XCTAssertNotNil(loaded)
+        XCTAssertEqual(loaded?.history.count, 0,
+                       "New session files must write history: [] — history lives in dedicated file")
+    }
+
+    /// After #15b, a "expired" session (expiresAt in the past) must still be decodable.
+    /// The TTL guard was removed from SessionManager.restore() — this test confirms the
+    /// struct itself doesn't crash on old expiry timestamps.
+    @available(*, deprecated) // references isValid for diagnostic assertion only
+    func testExpiredSession_decodesSuccessfully() throws {
+        let grant = SessionGrant(
+            sessionID: "expired-sess",
+            userPubkey: JanusKeyPair().publicKeyBase64,
+            providerID: "prov-expired",
+            maxCredits: 100,
+            expiresAt: Date().addingTimeInterval(-7200) // 2 hours ago
+        )
+        let persisted = PersistedClientSession(
+            privateKeyBase64: JanusKeyPair().privateKeyBase64,
+            sessionGrant: grant,
+            spendState: SpendState(sessionID: "expired-sess")
+        )
+        try store.save(persisted, as: "expired.json")
+        let loaded = store.load(PersistedClientSession.self, from: "expired.json")
+
+        XCTAssertNotNil(loaded, "Expired session must still decode — TTL guard removed in #15b")
+        XCTAssertEqual(loaded?.sessionGrant.sessionID, "expired-sess")
+        // isValid is deprecated but arithmetically correct — still false for past expiry.
+        XCTAssertFalse(loaded?.isValid ?? true,
+                       "isValid is still arithmetically correct (kept for diagnostics)")
+    }
+
     func testProviderStateDecodesWithoutEthKeyField() throws {
         let kp = JanusKeyPair()
         let oldJson = """

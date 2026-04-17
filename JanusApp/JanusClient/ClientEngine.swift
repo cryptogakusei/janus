@@ -229,7 +229,7 @@ class ClientEngine: ObservableObject {
                     // No Tempo channel — unblock immediately
                     sessionReady = true
                 }
-                responseHistory = []
+                responseHistory = manager.history  // history file loaded in SessionManager.init
                 settlementStatus = .unverified
             }
         }
