@@ -13,10 +13,9 @@ public struct ChannelSettler: Sendable {
     public let rpc: EthRPC
     public let config: TempoConfig
 
-    public init(config: TempoConfig) {
-        guard let url = config.rpcURL else {
-            fatalError("ChannelSettler requires a TempoConfig with rpcURL")
-        }
+    /// Returns nil if config has no rpcURL (off-chain-only mode — skips settlement gracefully).
+    public init?(config: TempoConfig) {
+        guard let url = config.rpcURL else { return nil }
         self.rpc = EthRPC(rpcURL: url, transport: config.transport)
         self.config = config
     }

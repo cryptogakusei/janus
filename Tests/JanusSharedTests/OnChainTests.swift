@@ -648,7 +648,7 @@ final class OnChainTests: XCTestCase {
         try await Task.sleep(nanoseconds: 3_000_000_000)
 
         // Settle (provider side)
-        let settler = ChannelSettler(config: config)
+        let settler = ChannelSettler(config: config)!
         let settleResult = await settler.settle(providerKeyPair: providerKP, channel: channel)
 
         switch settleResult {

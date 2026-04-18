@@ -26,6 +26,10 @@ class BonjourAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTransport
     var onClientDisconnected: ((String) -> Void)?
 
     private let serviceType = "_janus-tcp._tcp"
+    /// Dedicated queue for NWListener and NWConnection events.
+    /// Decouples Bonjour health from @MainActor scheduling — Bonjour keeps running
+    /// even if @MainActor is busy with inference or settlement.
+    private let networkQueue = DispatchQueue(label: "com.janus.bonjour.network", qos: .userInitiated)
     private var listener: NWListener?
     private var retryTask: Task<Void, Never>?
     private var retryCount = 0
@@ -109,7 +113,7 @@ class BonjourAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTransport
             }
 
             self.listener = listener
-            listener.start(queue: .main)
+            listener.start(queue: networkQueue)
         } catch {
             print("[BonjourAdvertiser] Failed to create listener: \(error)")
         }
@@ -134,6 +138,9 @@ class BonjourAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTransport
         clients.removeAll()
     }
 
+    // Note: NWConnection.send completion blocks fire on networkQueue, not @MainActor.
+    // Current completions only call print() — safe. If you add state mutation here in
+    // the future, dispatch back to @MainActor via Task { @MainActor in ... }.
     func send(_ envelope: MessageEnvelope, to senderID: String) throws {
         guard let connection = senderConnections[senderID] else {
             throw MPCError.notConnected
@@ -209,7 +216,7 @@ class BonjourAdvertiser: NSObject, ObservableObject, ProviderAdvertiserTransport
             }
         }
 
-        connection.start(queue: .main)
+        connection.start(queue: networkQueue)
         receiveLoop(connection: connection, clientID: clientID)
     }
 

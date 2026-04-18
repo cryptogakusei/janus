@@ -164,6 +164,10 @@ class ProviderEngine: ObservableObject {
     private var settlementTimerTask: Task<Void, Never>?
     private var networkMonitor: NWPathMonitor?
     private var lastPathStatus: NWPath.Status = .satisfied
+    /// Result of the most recent RPC connectivity probe.
+    /// Initialized to false — an initial probe runs in startNetworkMonitor() on first call.
+    /// Guards against WiFi-satisfied-but-no-WAN (e.g. mesh AP with no internet uplink).
+    private var lastRPCProbeSucceeded: Bool = false
 
     /// Callback to send messages back to a specific client via MPC.
     /// The String parameter is the sender/session ID for routing.
@@ -279,7 +283,7 @@ class ProviderEngine: ObservableObject {
     /// Tempo uses pathUSD for gas, so a fresh key needs faucet funding before it can settle.
     func fundProviderIfNeeded() async {
         guard let ethKP = providerEthKeyPair, let rpcURL = tempoConfig.rpcURL else { return }
-        let rpc = EthRPC(rpcURL: rpcURL)
+        let rpc = EthRPC(rpcURL: rpcURL, transport: tempoConfig.transport)
         do {
             try await rpc.fundAddress(ethKP.address)
             print("Provider funded via testnet faucet: \(ethKP.address.checksumAddress)")
@@ -330,13 +334,49 @@ class ProviderEngine: ObservableObject {
                 let wasUnsatisfied = self.lastPathStatus != .satisfied
                 self.lastPathStatus = path.status
                 if wasUnsatisfied && path.status == .satisfied {
-                    print("Network restored — retrying pending settlements...")
-                    await self.retryPendingSettlements()
+                    let rpcOK = await self.probeRPCConnectivity()
+                    self.lastRPCProbeSucceeded = rpcOK
+                    if rpcOK {
+                        print("Network restored (RPC verified) — retrying pending settlements...")
+                        await self.retryPendingSettlements()
+                    } else {
+                        print("Network path satisfied but RPC probe failed — settlement deferred")
+                    }
                 }
             }
         }
         monitor.start(queue: DispatchQueue.global(qos: .utility))
         self.networkMonitor = monitor
+
+        // Run initial probe to catch WiFi-with-no-WAN on cold start.
+        // Without this, lastRPCProbeSucceeded stays false indefinitely if the network
+        // never transitions through unsatisfied (e.g. provider starts on a mesh AP with no WAN).
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.lastRPCProbeSucceeded = await self.probeRPCConnectivity()
+        }
+    }
+
+    /// Fires a lightweight eth_gasPrice call to verify actual WAN connectivity.
+    /// NWPathMonitor reports .satisfied even on WiFi with no internet uplink (e.g. a mesh AP
+    /// with its WAN cable unplugged) — this probe catches that case.
+    /// Uses a two-Task timeout pattern to avoid conflating a real Task cancellation with a timeout.
+    private func probeRPCConnectivity() async -> Bool {
+        guard let rpcURL = tempoConfig.rpcURL else { return false }
+        let rpc = EthRPC(rpcURL: rpcURL, transport: tempoConfig.transport)
+        let probeTask = Task { _ = try await rpc.gasPrice() }
+        let timeoutTask = Task {
+            try await Task.sleep(nanoseconds: 5_000_000_000)
+            probeTask.cancel()
+        }
+        do {
+            try await probeTask.value
+            timeoutTask.cancel()
+            return true
+        } catch {
+            timeoutTask.cancel()
+            return false
+        }
     }
 
     deinit {
@@ -398,16 +438,33 @@ class ProviderEngine: ObservableObject {
             }
         }
 
+        // Guard: don't attempt RPC calls when network is unavailable.
+        // Unsettled channels are persisted — NWPathMonitor triggers retryPendingSettlements()
+        // when connectivity returns. Matches the guards already at lines 367 and 863.
+        guard lastPathStatus == .satisfied else {
+            print("Settlement deferred: network unavailable — will retry on reconnect")
+            persistState()
+            return
+        }
+        // Secondary check: NWPathMonitor says .satisfied but WiFi may have no WAN uplink
+        // (e.g. mesh AP with WAN cable unplugged). Applies to all paths — retry paths are
+        // triggered by startNetworkMonitor only after a successful probe.
+        guard lastRPCProbeSucceeded else {
+            print("Settlement deferred: RPC probe failed (no WAN uplink) — will retry on reconnect")
+            persistState()
+            return
+        }
+
         guard let ethKP = providerEthKeyPair, let rpcURL = tempoConfig.rpcURL else { return }
 
-        let rpc = EthRPC(rpcURL: rpcURL)
+        let rpc = EthRPC(rpcURL: rpcURL, transport: tempoConfig.transport)
         if !isRetry {
             // Ensure provider has gas funds before attempting settlement (skip on retry — already funded on startup)
             try? await rpc.fundAddress(ethKP.address)
             try? await Task.sleep(nanoseconds: 3_000_000_000)
         }
 
-        let settler = ChannelSettler(config: tempoConfig)
+        guard let settler = ChannelSettler(config: tempoConfig) else { return }
         var pendingChannels: [(String, Channel)] = []
 
         for (sessionID, channel) in channels {
@@ -465,47 +522,61 @@ class ProviderEngine: ObservableObject {
 
         // Retry pending channels after waiting for on-chain opening (disconnect path only)
         // Client needs ~15s total: 3s faucet wait + approve tx + open tx
+        // Retry pending channels after waiting for on-chain opening.
+        // Spawned as a separate Task so @MainActor is free during the 20s wait.
+        // isSettling is already reset by defer above — concurrent settlement is safe
+        // because ChannelSettler.settle() is idempotent (.alreadySettled if another wins).
         if !pendingChannels.isEmpty {
-            print("Waiting 20s for \(pendingChannels.count) channel(s) to appear on-chain...")
-            try? await Task.sleep(nanoseconds: 20_000_000_000)
-            for (sessionID, channel) in pendingChannels {
-                let result = await settler.settle(providerKeyPair: ethKP, channel: channel)
-                switch result {
-                case .settled(let txHash, let amount):
-                    channels[sessionID]?.recordSettlement(amount: amount)
-                    if removeAfterSettlement {
-                        removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId, onlyIfSettled: true)
+            let capturedChannels = pendingChannels
+            let capturedEthKP = ethKP
+            let capturedConfig = tempoConfig
+            let capturedRemove = removeAfterSettlement
+            Task { @MainActor [weak self] in
+                print("Waiting 20s for \(capturedChannels.count) channel(s) to appear on-chain...")
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                guard let self, self.lastPathStatus == .satisfied, self.lastRPCProbeSucceeded else {
+                    print("Pending channel retry deferred: network unavailable")
+                    return
+                }
+                guard let settler = ChannelSettler(config: capturedConfig) else { return }
+                for (sessionID, channel) in capturedChannels {
+                    let result = await settler.settle(providerKeyPair: capturedEthKP, channel: channel)
+                    switch result {
+                    case .settled(let txHash, let amount):
+                        self.channels[sessionID]?.recordSettlement(amount: amount)
+                        if capturedRemove {
+                            self.removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId, onlyIfSettled: true)
+                        }
+                        print("On-chain settlement (retry): session \(sessionID.prefix(8))... amount=\(amount)")
+                        os_log("SETTLEMENT_TX=%{public}@", log: smokeLog, type: .default, txHash)
+                        os_log("SETTLEMENT_AMOUNT=%{public}d", log: smokeLog, type: .default, amount)
+                        self.appendLog(LogEntry(
+                            timestamp: Date(), taskType: "on-chain-settlement",
+                            promptPreview: "Settled \(amount) credits on-chain",
+                            responsePreview: txHash,
+                            credits: Int(amount), isError: false, sessionID: sessionID
+                        ))
+                    case .noVoucher, .alreadySettled:
+                        if case .alreadySettled = result, capturedRemove {
+                            self.removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
+                        }
+                    case .failed(let reason):
+                        // After 20s grace period, channelNotOnChain is effectively permanent
+                        var shouldRemove = reason.isPermanent
+                        if case .channelNotOnChain = reason { shouldRemove = true }
+                        if shouldRemove {
+                            self.removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
+                            print("On-chain settlement permanently failed (retry) for \(sessionID.prefix(8))...: \(reason)")
+                        } else {
+                            print("On-chain settlement failed (retry) for \(sessionID.prefix(8))...: \(reason)")
+                        }
+                        os_log("SETTLEMENT_FAILED=%{public}@", log: smokeLog, type: .default, reason.description)
+                        self.appendLog(LogEntry(
+                            timestamp: Date(), taskType: "on-chain-settlement",
+                            promptPreview: "On-chain settlement failed: \(reason)",
+                            responsePreview: nil, credits: nil, isError: true, sessionID: sessionID
+                        ))
                     }
-                    print("On-chain settlement (retry): session \(sessionID.prefix(8))... amount=\(amount)")
-                    os_log("SETTLEMENT_TX=%{public}@", log: smokeLog, type: .default, txHash)
-                    os_log("SETTLEMENT_AMOUNT=%{public}d", log: smokeLog, type: .default, amount)
-                    appendLog(LogEntry(
-                        timestamp: Date(), taskType: "on-chain-settlement",
-                        promptPreview: "Settled \(amount) credits on-chain",
-                        responsePreview: txHash,
-                        credits: Int(amount), isError: false, sessionID: sessionID
-                    ))
-                case .noVoucher, .alreadySettled:
-                    if case .alreadySettled = result, removeAfterSettlement {
-                        removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
-                    }
-                case .failed(let reason):
-                    // After 20s grace period, channelNotOnChain is effectively permanent
-                    var shouldRemove = reason.isPermanent
-                    if case .channelNotOnChain = reason { shouldRemove = true }
-
-                    if shouldRemove {
-                        removeChannelIfMatch(sessionID: sessionID, expectedChannelId: channel.channelId)
-                        print("On-chain settlement permanently failed (retry) for \(sessionID.prefix(8))...: \(reason)")
-                    } else {
-                        print("On-chain settlement failed (retry) for \(sessionID.prefix(8))...: \(reason)")
-                    }
-                    os_log("SETTLEMENT_FAILED=%{public}@", log: smokeLog, type: .default, reason.description)
-                    appendLog(LogEntry(
-                        timestamp: Date(), taskType: "on-chain-settlement",
-                        promptPreview: "On-chain settlement failed: \(reason)",
-                        responsePreview: nil, credits: nil, isError: true, sessionID: sessionID
-                    ))
                 }
             }
         }
